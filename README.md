@@ -165,3 +165,4 @@ After installing the package, use `wallpick toggle` as a click action, `wallpick
 - Wallpaper rendering requires the Wayland protocols supported by awww and Quickshell.
 - No automatic system/session service is installed. The wallpaper daemon is started on demand.
 # wallpick
+# wallpick
