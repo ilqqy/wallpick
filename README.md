@@ -1,168 +1,140 @@
-# Wallpick
+**A cinematic wallpaper picker for NixOS and Hyprland.** Browse saved images, preview them in a drifting gallery, apply one when you are ready, or fetch something new from Konachan and Wallhaven. The Quickshell interface and wallpaper backend ship together in one flake.
 
-A native Quickshell / Qt Quick wallpaper browser with a bundled backend. One Nix flake supplies the UI, wallpaper downloads, favorites, image validation, and `awww`. No Fish functions or personal NixOS scripts are required.
+## Quick start
 
-Designed and tested on **NixOS + Hyprland**. It requires a running Wayland session with layer-shell support; GNOME/KDE and X11 are not supported targets. Other compatible Wayland compositors may work, but Hyprland-specific monitor selection and outside-click dismissal are not guaranteed there.
-
-## Run
-
-From this checkout:
+Run without installing:
 
 ```sh
-nix run .
-nix run . -- toggle
-nix run . -- close
-nix run . -- status
-nix run . -- stop
+nix run github:ilqqy/wallpick
 ```
 
-Or run a checkout from elsewhere with `nix run /path/to/wallpick`. This project does not need to be added to your system flake to try it.
-
-The package includes all backend executables. On the first Apply or remote Random action, Wallpick reuses a running `awww-daemon`, or starts its bundled daemon and waits for it to become ready. Closing the popup leaves the wallpaper and daemon running. The daemon is not installed as an autostart service; start Wallpick again in each session when needed. Avoid running a competing wallpaper daemon on the same outputs.
-
-Build without launching:
+Open, toggle, or close the popup:
 
 ```sh
-nix build .
-./result/bin/wallpick open
+nix run github:ilqqy/wallpick -- open
+nix run github:ilqqy/wallpick -- toggle
+nix run github:ilqqy/wallpick -- close
 ```
 
-## Install declaratively
+Install into your user profile for a short `wallpick` command:
 
-Add this flake as an input to your own flake (use the checkout's absolute path, or its repository URL after publishing):
-
-```nix
-inputs.wallpick.url = "path:/absolute/path/to/wallpick";
+```sh
+nix profile add github:ilqqy/wallpick
+wallpick open
 ```
 
-For NixOS, include the module in your system's module list:
+Requires a **Wayland session with layer-shell support**. NixOS + Hyprland is the tested setup. The package includes Quickshell, `awww`, image validation, and the download tools; no Fish functions, API keys, or edits to your NixOS configuration are needed.
 
-```nix
-modules = [
-  inputs.wallpick.nixosModules.default
-  { programs.wallpick.enable = true; }
-];
-```
+## Preview
 
-For Home Manager, include its module in your home configuration:
+<p align="center">
+  <img src="docs/preview.png" alt="Wallpick wallpaper browser showing the preview, source folders, carousel, and actions" width="910">
+</p>
 
-```nix
-imports = [ inputs.wallpick.homeManagerModules.default ];
-programs.wallpick.enable = true;
-```
+The screenshot uses original sample wallpapers created for this project.
 
-Use either module, or add `inputs.wallpick.packages.${pkgs.stdenv.hostPlatform.system}.default` to `environment.systemPackages` / `home.packages` directly. The modules install the package and desktop entry; they do not alter Waybar, compositor bindings, or services. Packages are exposed for x86_64-linux and aarch64-linux; runtime testing was performed on x86_64-linux.
+## How it works
 
-## Browsing and Random
+Select a wallpaper in the gallery to update the large preview. **Apply wallpaper** sets it on your desktop. Selection alone never changes your wallpaper.
 
-- Selecting an image updates the large preview. **Apply wallpaper** commits it to the desktop after its preview has loaded.
-- Every category has a **Random** button. **Recent / Favorites** choose a different saved image when possible, for preview only. **Konachan / Wallhaven / Gooner** download and apply immediately.
-- The tag/query field is used by remote Random buttons. Examples: `rezero emilia -chibi`, `dark forest`. Konachan resolves keywords into popular tags; negative tags are supported.
-- Konachan uses the safe endpoint and rating. Wallhaven uses general, SFW, 16:9/16:10 results. Gooner is a separate questionable-rating Konachan mode; its images are excluded from Recent.
-- Favorite saves the selected image, or the current wallpaper when appropriate, without applying it.
-- Current-desktop tracking is updated only after a successful apply. Failed downloads do not erase it.
+Each source has a **Random** button. In **Recent** and **Favorites**, it chooses a saved image for preview. In **Konachan**, **Wallhaven**, and **Gooner**, it downloads and applies a new image immediately. The tag field accepts queries such as `rezero emilia -chibi` or `dark forest`. Gooner is a separate questionable-rating mode and stays out of Recent.
 
-Sources are available even before their directories exist. The backend creates destination directories as needed.
+The package starts `awww-daemon` on demand if one is not already running. It stores downloaded images and a copy of the current wallpaper in these folders:
 
-| Collection | Default path |
+| Source | Default folder |
 | --- | --- |
 | Favorites | `~/Pictures/favorite` |
 | Konachan | `~/Pictures/random_konachan` |
 | Wallhaven | `~/Pictures/random_wallhaven` |
 | Gooner | `~/Pictures/random_gooner` |
-| Current marker | `~/Pictures/.current-wallpaper` |
+| Current wallpaper | `~/Pictures/.current-wallpaper` |
 
-These paths preserve compatibility with the original workflow. Wallpick neither reads nor requires the original NixOS configuration. Existing Fish commands remain independent; the packaged UI no longer invokes them.
+Existing images in those folders appear automatically. Failed downloads leave the current wallpaper marker intact.
 
-## Configuration
+## Declarative installation
 
-Set environment variables **before starting** the app. If it is already running, use `wallpick stop` first.
+Add Wallpick to your flake inputs:
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `WALLPICK_PICTURES_DIR` | `~/Pictures` | Root for all browsing, downloads, favorites, and current tracking |
-| `WALLPICK_MIN_WIDTH` | `1920` | Minimum remote wallpaper width |
-| `WALLPICK_MIN_HEIGHT` | `1080` | Minimum remote wallpaper height |
-| `WALLPICK_PYWAL` | `0` | Set to `1` to generate a palette using bundled pywal after applying |
-| `WALLPICK_REDUCED_MOTION` | `0` | Set to `1` to disable ambient and spring motion |
-
-For example:
-
-```sh
-WALLPICK_PICTURES_DIR="$HOME/Pictures/Wallpick" nix run .
-WALLPICK_PYWAL=1 nix run .
+```nix
+inputs.wallpick.url = "github:ilqqy/wallpick";
 ```
 
-Palette generation is optional and does not restart Waybar. Applications that consume pywal colors need their own reload integration. No API keys are required for the bundled public sources; availability and rate limits are controlled by those services.
+Import the module appropriate to your configuration, then enable it:
 
-## Command line and IPC
+```nix
+# In your NixOS module list:
+inputs.wallpick.nixosModules.default
 
-The following commands run the bundled backend directly, wait for completion, and return a failure exit code if the operation fails:
+# In a NixOS module:
+programs.wallpick.enable = true;
+```
+
+Or use Home Manager:
+
+```nix
+# In your Home Manager imports:
+inputs.wallpick.homeManagerModules.default
+
+# In your Home Manager configuration:
+programs.wallpick.enable = true;
+```
+
+Either module adds the package and desktop entry. You can also add `inputs.wallpick.packages.${pkgs.stdenv.hostPlatform.system}.default` directly to `environment.systemPackages` or `home.packages`. The modules do not change Waybar, bindings, or services.
+
+## Commands and controls
+
+After installing into your profile:
 
 ```sh
+wallpick toggle
+wallpick status
+wallpick stop
+wallpick random-anime
+wallpick random-wall
+wallpick random-gooner
+
 wallpick apply /absolute/path/to/image.png
 wallpick favorite
 wallpick fetch anime rezero -chibi
 wallpick fetch general dark forest
-wallpick fetch gooner tags
 ```
 
-The UI commands are asynchronous:
+The `random-*` commands send requests to the running UI; `apply`, `favorite`, and `fetch` run the bundled backend directly. Remote Random actions apply immediately.
+
+In the popup: **Esc** closes, **Left/Right** and **Home/End** browse, **Enter** applies once the preview has loaded, **F** favorites, and **R** runs Random for the selected source. The carousel also supports dragging and the mouse wheel.
+
+For a future Waybar binding, use the installed `wallpick toggle` command. You can map other clicks to `wallpick random-anime` or `wallpick favorite`. The repository does not modify Waybar.
+
+## Configuration
+
+Set these variables before starting Wallpick. Run `wallpick stop` first if it is already open.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WALLPICK_PICTURES_DIR` | `~/Pictures` | Root for downloads, favorites, and current wallpaper tracking |
+| `WALLPICK_MIN_WIDTH` | `1920` | Minimum width for remote results |
+| `WALLPICK_MIN_HEIGHT` | `1080` | Minimum height for remote results |
+| `WALLPICK_PYWAL` | `0` | Set to `1` to generate a pywal palette after applying |
+| `WALLPICK_REDUCED_MOTION` | `0` | Set to `1` to stop ambient and spring animations |
+
+For example: `WALLPICK_PICTURES_DIR="$HOME/Pictures/Wallpick" nix run github:ilqqy/wallpick`.
+
+Palette generation does not restart Waybar. Applications that use pywal colors need their own reload hook.
+
+## Development
 
 ```sh
-wallpick open
-wallpick toggle
-wallpick close
-wallpick status
-wallpick refresh
-wallpick random-anime
-wallpick random-wall
-wallpick random-gooner
-```
-
-For development IPC:
-
-```sh
-qs -p "$PWD/src" ipc call wallpick status
-qs -p "$PWD/src" ipc call wallpick operationStatus
-qs -p "$PWD/src" ipc call wallpick randomSource favorites
-```
-
-Other IPC methods: `selectSource`, `selectIndex`, `selectedPath`, `applySelected`, `favoriteSelected`, `randomAnime`, `randomWall`, and `randomGooner`.
-
-A stable [Quickshell ShellId](https://quickshell.org/docs/v0.3.0/guide/advanced/#shellid) lets the launcher find Wallpick across package paths. The launcher addresses that instance explicitly, because Quickshell's path-based duplicate check alone does not prevent duplicates across upgrades. Stop the running instance before starting a new version or switching between packaged and development code.
-
-## Keyboard
-
-Esc closes. Left/Right and Home/End browse. Enter applies once the preview is ready (or fetches when the tag field has focus). F favorites. R uses the selected category's Random action. Tab reaches source cards, Random buttons, gallery, input, and action controls.
-
-## Development and tests
-
-```sh
+git clone https://github.com/ilqqy/wallpick.git
+cd wallpick
 nix develop
 ./scripts/run.sh open
-./scripts/run.sh foreground
+
 python3 tests/actions_test.py
 python3 tests/check.py
 nix flake check
 nix build .
-# Stop any running Wallpick first; needs a Wayland session:
-python3 tests/package_check.py
 ```
 
-Backend tests use temporary directories, mocked network responses, and mocked wallpaper commands. UI tests use temporary collections and a fake action backend. Popup tests briefly open a fixture window and require a Wayland session. Tests do not apply a real wallpaper. The flake check runs the backend suite without a desktop or network connection.
+The tests use temporary picture folders and mocked wallpaper commands. `tests/check.py` needs a Wayland session for its popup checks; `nix flake check` runs the backend suite without a desktop or network connection.
 
-The shader is compiled by the development launcher and package build. Full liquid-metal rendering needs Qt 6 GPU rendering; software rendering keeps the controls usable.
-
-## Optional Waybar integration
-
-After installing the package, use `wallpick toggle` as a click action, `wallpick random-anime` for random anime, and `wallpick favorite` for the current wallpaper. Invoke the installed binary rather than evaluating `nix run` on every click. This project does not modify Waybar or rebuild your system.
-
-## Limits
-
-- PNG and JPEG are supported.
-- Remote actions need internet access and depend on the public providers.
-- Wallpaper rendering requires the Wayland protocols supported by awww and Quickshell.
-- No automatic system/session service is installed. The wallpaper daemon is started on demand.
-# wallpick
-# wallpick
+Wallpick supports PNG and JPEG. Remote sources need internet access, and the shader rim needs Qt 6 GPU rendering. Hyprland provides the tested monitor placement and outside-click behavior; other layer-shell compositors may work with reduced integration. X11 and GNOME/KDE are not supported targets.
