@@ -1,0 +1,3 @@
+singleton AppConfig 1.0 AppConfig.qml
+singleton Theme 1.0 Theme.qml
+WallpaperPopup 1.0 WallpaperPopup.qml

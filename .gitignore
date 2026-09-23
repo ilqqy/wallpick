@@ -1,0 +1,5 @@
+src/shaders/*.qsb
+result
+.direnv/
+__pycache__/
+*.pyc

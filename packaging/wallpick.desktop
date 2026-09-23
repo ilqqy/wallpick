@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Wallpick
+Comment=Browse, download and apply wallpapers
+Exec=wallpick open
+Icon=preferences-desktop-wallpaper
+Terminal=false
+Categories=Utility;Settings;
