@@ -381,7 +381,6 @@ PanelWindow {
                 }
                 GlassApplyButton {
                     id: applyButton
-                    active: window.opened
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
                     width: 171

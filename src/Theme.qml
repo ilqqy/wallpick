@@ -11,6 +11,10 @@ QtObject {
     readonly property color dim: "#6d7987"
     readonly property color accent: "#a6b6c9"
     readonly property color warm: "#d8b38a"
+    readonly property color primaryGlassTop: "#c05a7082"
+    readonly property color primaryGlassMiddle: "#d13c5164"
+    readonly property color primaryGlassBottom: "#df293c4f"
+    readonly property color primaryGlassEdge: "#879eb1c1"
     readonly property int radius: 18
     readonly property int fast: 160
     readonly property int normal: 320
