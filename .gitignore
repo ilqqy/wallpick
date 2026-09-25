@@ -3,3 +3,7 @@ result
 .direnv/
 __pycache__/
 *.pyc
+
+AGENTS.md
+ASTRA_HANDOFF.md
+PROJECT_SPEC.md
