@@ -37,7 +37,9 @@ The screenshot uses original sample wallpapers created for this project.
 
 Select a wallpaper in the gallery to update the large preview. **Apply wallpaper** sets it on your desktop. Selection alone never changes your wallpaper.
 
-Each source has a **Random** button. In **Recent** and **Favorites**, it chooses a saved image for preview. In **Konachan**, **Wallhaven**, and **Gooner**, it downloads and applies a new image immediately. The tag field accepts queries such as `rezero emilia -chibi` or `dark forest`. Gooner is a separate questionable-rating mode and stays out of Recent.
+Each source card has a circular shuffle control. In **Recent** and **Favorites**, it chooses a saved image for preview. In **Konachan**, **Wallhaven**, and **Gooner**, it downloads and applies a new image immediately. The tag field accepts queries such as `rezero emilia -chibi` or `dark forest`; press **Fetch** or Enter to use the last selected remote source. Gooner is a separate questionable-rating mode and stays out of Recent.
+
+The popup uses a dark translucent surface with compositor blur. On Hyprland, the launcher adds a Wallpick-only blur rule for the current session; it does not edit your Hyprland or NixOS configuration. Other layer-shell compositors show the readable translucent surface without that Hyprland-specific blur rule.
 
 The package starts `awww-daemon` on demand if one is not already running. It stores downloaded images and a copy of the current wallpaper in these folders:
 

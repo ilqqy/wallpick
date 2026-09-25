@@ -11,11 +11,19 @@ instances = [i for i in json.load(sys.stdin) if i.get("shell_id") == "wallpick"]
 print(instances[0]["id"] if instances else "")
 '
 }
-shader="$project_dir/src/shaders/liquidmetal.frag"
-compiled="$shader.qsb"
-
-if [[ "${WALLPICK_PACKAGED:-0}" != 1 && ( ! -e "$compiled" || "$shader" -nt "$compiled" ) ]]; then
-    qsb --glsl "100 es,120,150" --hlsl 50 --msl 12 -o "$compiled" "$shader"
+enable_compositor_blur() {
+    # Hyprland 0.55 does not expose ext-background-effect-v1. A namespace-
+    # scoped runtime rule gives Wallpick backdrop blur without changing config.
+    if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] && command -v hyprctl >/dev/null 2>&1; then
+        hyprctl eval 'hl.layer_rule({ name = "wallpick-glass", match = { namespace = "^wallpick$" }, blur = true, ignore_alpha = 0.08 })' >/dev/null 2>&1 || true
+    fi
+}
+if [[ "${WALLPICK_PACKAGED:-0}" != 1 ]]; then
+    shader="$project_dir/src/shaders/inkbleed.frag"
+    compiled="$shader.qsb"
+    if [[ ! -e "$compiled" || "$shader" -nt "$compiled" ]]; then
+        qsb --glsl "100 es,120,150" --hlsl 50 --msl 12 -o "$compiled" "$shader"
+    fi
 fi
 
 case "${1:-open}" in
@@ -40,6 +48,7 @@ case "${1:-open}" in
     foreground)
         instance="$(find_instance)"
         if [[ -n "$instance" ]]; then echo "Wallpick is already running; use stop first."; exit 0; fi
+        enable_compositor_blur
         exec "$qs_bin" -p "$project_dir/src" --no-duplicate
         ;;
     open|close|toggle|status|refresh|random-anime|random-wall|random-gooner)
@@ -56,6 +65,7 @@ case "${1:-open}" in
                 [[ "$action" == status ]] && echo stopped
                 exit 0
             fi
+            enable_compositor_blur
             "$qs_bin" -p "$project_dir/src" --no-duplicate --daemonize
         fi
         ready=false

@@ -29,7 +29,7 @@
             buildPhase = ''
               runHook preBuild
               qsb --glsl "100 es,120,150" --hlsl 50 --msl 12 \
-                -o src/shaders/liquidmetal.frag.qsb src/shaders/liquidmetal.frag
+                -o src/shaders/inkbleed.frag.qsb src/shaders/inkbleed.frag
               runHook postBuild
             '';
             installPhase = ''

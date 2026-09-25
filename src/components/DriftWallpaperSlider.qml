@@ -100,9 +100,14 @@ FocusScope {
         anchors.top: parent.top
         height: 183
         radius: 13
-        color: "#0c1119"
-        border.color: Theme.border
+        color: "#7815202c"
+        border.color: "#50697f91"
         clip: true
+
+        Rectangle {
+            x: 17; y: 1; width: parent.width - 34; height: 1
+            color: "#397d96ab"
+        }
 
         Text {
             anchors.centerIn: parent
@@ -152,8 +157,8 @@ FocusScope {
                     anchors.fill: parent
                     radius: 9
                     color: Theme.panelRaised
-                    border.color: card.cardIndex === root.activeIndex ? "#c7d6e3" : "#607080"
-                    border.width: card.cardIndex === root.activeIndex ? 2 : 1
+                    border.color: card.cardIndex === root.activeIndex ? "#bacbdae6" : "#667d90a2"
+                    border.width: 1
                     layer.enabled: !root.reducedMotion && card.visible
                     layer.effect: MultiEffect {
                         blurEnabled: true
@@ -189,8 +194,8 @@ FocusScope {
             anchors.left: parent.left
             gradient: Gradient {
                 orientation: Gradient.Horizontal
-                GradientStop { position: 0; color: "#0c1119" }
-                GradientStop { position: 1; color: "#000c1119" }
+                GradientStop { position: 0; color: "#8a14212e" }
+                GradientStop { position: 1; color: "#0014212e" }
             }
             z: 150
         }
@@ -199,8 +204,8 @@ FocusScope {
             anchors.right: parent.right
             gradient: Gradient {
                 orientation: Gradient.Horizontal
-                GradientStop { position: 0; color: "#000c1119" }
-                GradientStop { position: 1; color: "#0c1119" }
+                GradientStop { position: 0; color: "#0014212e" }
+                GradientStop { position: 1; color: "#8a14212e" }
             }
             z: 150
         }

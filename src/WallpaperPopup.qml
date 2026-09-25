@@ -16,6 +16,7 @@ PanelWindow {
     property string previewError: ""
     readonly property bool previewReady: heroImage.status === Image.Ready && displayUrl === selectedUrl && !!selectedUrl
     property string fetchMode: "randomanime"
+    readonly property string fetchSourceName: fetchMode === "randomwall" ? "Wallhaven" : fetchMode === "randomgooner" ? "Gooner" : "Konachan"
     property bool opened: false
     property string transientMessage: ""
     signal requestClose()
@@ -29,6 +30,7 @@ PanelWindow {
     margins.top: 30
     margins.right: 18
     WlrLayershell.layer: WlrLayer.Overlay
+    WlrLayershell.namespace: "wallpick"
     WlrLayershell.exclusionMode: ExclusionMode.Ignore
     WlrLayershell.keyboardFocus: visible ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
 
@@ -77,7 +79,7 @@ PanelWindow {
             if (count > 1 && next >= gallery.activeIndex) next++
             gallery.goTo(next)
             service.error = ""
-            service.message = "Random selection · press Apply to use it"
+            service.message = ""
         })
     }
     function apply() {
@@ -132,21 +134,27 @@ PanelWindow {
     }
 
     Rectangle {
+        id: glassShell
         anchors.fill: parent
-        radius: 24
+        radius: 21
         color: Theme.background
-        border.color: "#516071"
+        border.color: "#748a9caf"
         border.width: 1
     }
 
-    AsciiWave {
-        active: window.opened
-        x: 1; y: 1
-        width: parent.width - 2
-        height: 146
-        opacity: service.busy ? 0.9 : 0.55
-        clip: true
-        Behavior on opacity { NumberAnimation { duration: 260 } }
+    Rectangle {
+        anchors { left: glassShell.left; right: glassShell.right; top: glassShell.top; margins: 2 }
+        height: 130
+        radius: 20
+        gradient: Gradient {
+            GradientStop { position: 0; color: "#1f9cb7ce" }
+            GradientStop { position: 1; color: "#009cb7ce" }
+        }
+    }
+
+    Rectangle {
+        x: 28; y: 1; width: window.width - 56; height: 1
+        color: "#537f9aaf"
     }
 
     FocusScope {
@@ -175,24 +183,7 @@ PanelWindow {
                 anchors.right: parent.right
                 anchors.top: parent.top
                 height: 63
-                SparkleTitle { x: 6; y: -2; text: "Wallpapers"; active: window.opened }
-                Column {
-                    anchors.right: closeButton.left
-                    anchors.rightMargin: 18
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 3
-                    Text {
-                        text: window.sourceCount(window.sourceKey) + " wallpapers · " + (window.sourceKey === "recent" ? "Recent" : AppConfig.sourceInfo.find(info => info.key === window.sourceKey).label)
-                        color: Theme.foreground
-                        font.pixelSize: 13
-                        font.weight: Font.Medium
-                    }
-                    Text {
-                        text: service.scanning ? "Updating collection…" : service.busy ? "Working…" : "Select, then apply"
-                        color: Theme.muted
-                        font.pixelSize: 11
-                    }
-                }
+                InkBleedTitle { x: 20; y: -2; text: "Wallpick"; opened: window.opened }
                 QuietButton {
                     id: closeButton
                     anchors.right: parent.right
@@ -209,15 +200,16 @@ PanelWindow {
                 anchors.topMargin: 10
                 anchors.left: parent.left
                 anchors.right: parent.right
-                height: 293
-                radius: 15
-                color: Theme.panel
-                border.color: Theme.border
+                height: 308
+                radius: 16
+                color: "#a014202c"
+                border.color: "#8492a8b9"
                 clip: true
 
                 Image {
                     id: heroImage
                     anchors.fill: parent
+                    anchors.margins: 4
                     source: window.displayUrl
                     sourceSize.width: 1200
                     sourceSize.height: 700
@@ -238,6 +230,7 @@ PanelWindow {
                 Image {
                     id: oldImage
                     anchors.fill: parent
+                    anchors.margins: 4
                     sourceSize.width: 1200
                     sourceSize.height: 700
                     asynchronous: true
@@ -248,10 +241,10 @@ PanelWindow {
                 }
                 Rectangle {
                     anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                    height: 76
+                    height: 54
                     gradient: Gradient {
                         GradientStop { position: 0; color: "#00070c13" }
-                        GradientStop { position: 1; color: "#df070c13" }
+                        GradientStop { position: 1; color: "#55070c13" }
                     }
                 }
                 Text {
@@ -261,42 +254,14 @@ PanelWindow {
                     color: Theme.muted
                     font.pixelSize: 15
                 }
-                Row {
-                    anchors.left: parent.left
-                    anchors.leftMargin: 19
-                    anchors.bottom: parent.bottom
-                    anchors.bottomMargin: 17
-                    spacing: 10
-                    visible: !!gallery.selectedItem
-                    Rectangle {
-                        width: 6; height: 6; radius: 3
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: gallery.selectedItem && gallery.selectedItem.applied ? "#a7dbc4" : Theme.accent
-                    }
-                    Text {
-                        text: gallery.selectedItem ? gallery.selectedItem.name : ""
-                        width: Math.min(600, hero.width - 130)
-                        elide: Text.ElideMiddle
-                        color: Theme.foreground
-                        font.pixelSize: 13
-                        font.weight: Font.DemiBold
-                    }
-                    Text {
-                        text: gallery.selectedItem && gallery.selectedItem.applied ? "CURRENT" : "SELECTED"
-                        color: Theme.muted
-                        font.pixelSize: 10
-                        font.weight: Font.DemiBold
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-                }
                 Rectangle {
                     anchors.right: parent.right
                     anchors.rightMargin: 16
                     anchors.top: parent.top
                     anchors.topMargin: 15
-                    width: 128; height: 72; radius: 7
-                    color: "#c90b1119"
-                    border.color: "#a0aebd"
+                    width: 124; height: 70; radius: 8
+                    color: "#ad172331"
+                    border.color: "#859aaabc"
                     visible: !!service.catalog.current || service.currentUncertain
                     Image {
                         anchors.fill: parent
@@ -308,7 +273,7 @@ PanelWindow {
                         fillMode: Image.PreserveAspectCrop
                     }
                     Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 20; color: "#b70b1119" }
-                    Text { anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 3; text: service.currentUncertain ? (service.catalog.current ? "LAST KNOWN" : "CURRENT UNKNOWN") : "CURRENT DESKTOP"; color: "white"; font.pixelSize: 9; font.weight: Font.DemiBold }
+                    Text { anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 3; text: service.currentUncertain ? "LAST KNOWN" : "CURRENT"; color: "white"; font.pixelSize: 9; font.weight: Font.DemiBold }
                 }
             }
 
@@ -318,34 +283,21 @@ PanelWindow {
                 anchors.topMargin: 13
                 anchors.left: parent.left
                 width: parent.width
-                height: 133
+                height: 111
                 spacing: 9
                 Repeater {
                     model: AppConfig.sourceInfo
-                    delegate: Column {
-                        visible: true
+                    delegate: FolderSourceCard {
                         width: (window.width - 40 - 4 * sources.spacing) / 5
-                        spacing: 2
-                        FolderSourceCard {
-                            width: parent.width
-                            height: 101
-                            title: modelData.label
-                            hint: modelData.hint
-                            count: window.sourceCount(modelData.key)
-                            previews: window.sourceItems(modelData.key)
-                            selected: window.sourceKey === modelData.key
-                            onClicked: window.chooseSource(modelData.key)
-                        }
-                        QuietButton {
-                            width: parent.width - 6
-                            x: 3
-                            height: 28
-                            radius: 7
-                            text: "⤨  Random"
-                            Accessible.name: "Random " + modelData.label
-                            enabled: !service.busy && (!!modelData.command || window.sourceCount(modelData.key) > 0)
-                            onClicked: window.randomFromSource(modelData.key)
-                        }
+                        height: 105
+                        title: modelData.label
+                        hint: modelData.hint
+                        count: window.sourceCount(modelData.key)
+                        previews: window.sourceItems(modelData.key)
+                        selected: window.sourceKey === modelData.key
+                        randomEnabled: !service.busy && (!!modelData.command || window.sourceCount(modelData.key) > 0)
+                        onClicked: window.chooseSource(modelData.key)
+                        onRandomClicked: window.randomFromSource(modelData.key)
                     }
                 }
             }
@@ -357,7 +309,7 @@ PanelWindow {
                 anchors.topMargin: 12
                 anchors.left: parent.left
                 anchors.right: parent.right
-                height: 216
+                height: 220
                 items: window.sourceItems(window.sourceKey)
             }
 
@@ -373,16 +325,19 @@ PanelWindow {
                     id: searchBox
                     anchors.left: parent.left
                     anchors.top: parent.top
-                    width: parent.width * 0.51
+                    width: parent.width
                     height: 43
-                    radius: 10
-                    color: Theme.panel
-                    border.color: query.activeFocus ? Theme.accent : Theme.border
+                    radius: 11
+                    color: "#a11d2a38"
+                    border.color: query.activeFocus ? "#b4bccbd8" : Theme.border
+                    border.width: 1
+                    Rectangle {
+                        x: 14; y: 1; width: parent.width - 28; height: 1
+                        color: "#397f94a9"
+                    }
                     TextInput {
                         id: query
-                        anchors.fill: parent
-                        anchors.leftMargin: 15
-                        anchors.rightMargin: 12
+                        anchors { left: parent.left; right: fetchButton.left; top: parent.top; bottom: parent.bottom; leftMargin: 15; rightMargin: 12 }
                         verticalAlignment: TextInput.AlignVCenter
                         color: Theme.foreground
                         selectionColor: Theme.accent
@@ -394,45 +349,22 @@ PanelWindow {
                     Text {
                         anchors.fill: query
                         verticalAlignment: Text.AlignVCenter
-                        text: window.fetchMode === "randomwall" ? "Search general · dark forest" : "Tags · rezero emilia -chibi"
+                        text: window.fetchSourceName + (window.fetchMode === "randomwall" ? " query" : " tags")
                         color: Theme.dim
                         font.pixelSize: 13
                         visible: query.text.length === 0 && !query.activeFocus
                     }
-                }
-
-                Row {
-                    id: fetchActions
-                    anchors.left: searchBox.right
-                    anchors.leftMargin: 9
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    height: 43
-                    spacing: 6
-                    Repeater {
-                        model: [
-                            { text: "Random Anime", command: "randomanime" },
-                            { text: "Random General", command: "randomwall" },
-                            { text: "Random Gooner", command: "randomgooner" }
-                        ]
-                        delegate: QuietButton {
-                            width: (fetchActions.width - 2 * fetchActions.spacing) / 3
-                            height: 43
-                            text: modelData.text
-                            selected: window.fetchMode === modelData.command
-                            enabled: !service.busy
-                            onClicked: window.fetch(modelData.command)
-                        }
+                    QuietButton {
+                        id: fetchButton
+                        anchors.right: parent.right
+                        anchors.rightMargin: 4
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 128; height: 35; radius: 8
+                        text: "Fetch " + window.fetchSourceName
+                        enabled: !service.busy
+                        Accessible.name: "Fetch using " + window.fetchSourceName
+                        onClicked: window.fetch(window.fetchMode)
                     }
-                }
-
-                Text {
-                    anchors.left: parent.left
-                    anchors.top: searchBox.bottom
-                    anchors.topMargin: 7
-                    text: "Random fetches set the desktop immediately"
-                    color: Theme.dim
-                    font.pixelSize: 10
                 }
 
                 QuietButton {
@@ -447,7 +379,7 @@ PanelWindow {
                     enabled: !service.busy && (window.selectedPath ? window.previewReady : (!!service.catalog.current && !service.currentUncertain))
                     onClicked: window.favorite()
                 }
-                LiquidMetalButton {
+                GlassApplyButton {
                     id: applyButton
                     active: window.opened
                     anchors.right: parent.right
@@ -468,7 +400,7 @@ PanelWindow {
                     verticalAlignment: Text.AlignVCenter
                     elide: Text.ElideRight
                     color: service.error || window.previewError ? "#e9a7a6" : service.message ? "#abd4c3" : Theme.muted
-                    text: service.error || window.previewError || service.message || (gallery.selectedItem ? (gallery.activeIndex + 1) + " / " + gallery.count : "No selection")
+                    text: service.error || window.previewError || service.message || ""
                     font.pixelSize: 12
                 }
             }

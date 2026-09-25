@@ -214,3 +214,41 @@ marker.write_bytes(image.read_bytes())
         finally:
             process.terminate()
             process.wait(timeout=5)
+
+    # The title's shader exists only during the one-shot entrance. Reopening
+    # must create a fresh entrance, while reduced motion skips it entirely.
+    shutil.copyfile(PROJECT / "tests/title.qml", runtime / "src/title-test.qml")
+    config = str(runtime / "src/title-test.qml")
+
+    def title_ipc(function):
+        return subprocess.check_output(["qs", "-p", config, "ipc", "call",
+            "wallpick-title-test", function], env=env, text=True, stderr=subprocess.DEVNULL)
+
+    def title_state():
+        return json.loads(title_ipc("state"))
+
+    with (root / "title.log").open("w+") as log:
+        process = subprocess.Popen(["qs", "-p", config, "--no-duplicate"], env=env,
+                                   stdout=log, stderr=subprocess.STDOUT)
+        try:
+            wait_for(title_state, lambda s: not s["opened"] and not s["animating"])
+            title_ipc("open")
+            wait_for(title_state, lambda s: s["animating"] and s["entrances"] == 1)
+            wait_for(title_state, lambda s: not s["animating"] and s["entrances"] == 1, seconds=3)
+            title_ipc("close")
+            title_ipc("open")
+            wait_for(title_state, lambda s: s["animating"] and s["entrances"] == 2)
+            title_ipc("reduced")
+            assert not title_state()["animating"]
+            title_ipc("close")
+            title_ipc("open")
+            assert title_state()["entrances"] == 2 and not title_state()["animating"]
+            print("PASS: Ink Bleed starts on open, settles static, replays once, and honors reduced motion")
+        except Exception:
+            log.flush()
+            log.seek(0)
+            print(log.read(), file=sys.stderr)
+            raise
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
