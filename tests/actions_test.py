@@ -40,6 +40,39 @@ class ActionsTest(unittest.TestCase):
     def completed(self, argv, returncode=0, stdout=b"", stderr=b""):
         return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
 
+    def test_pywal_follows_an_existing_palette_unless_overridden(self):
+        cache = self.root / "cache"
+        with patch.dict(os.environ, {"WALLPICK_PYWAL": "auto", "XDG_CACHE_HOME": str(cache)}):
+            self.assertFalse(actions.pywal_enabled())
+            (cache / "wal").mkdir(parents=True)
+            (cache / "wal" / "colors.json").write_text("{}")
+            self.assertTrue(actions.pywal_enabled())
+            with patch.dict(os.environ, {"WALLPICK_PYWAL": "0"}):
+                self.assertFalse(actions.pywal_enabled())
+        with patch.dict(os.environ, {"WALLPICK_PYWAL": "1", "XDG_CACHE_HOME": str(self.root / "empty")}):
+            self.assertTrue(actions.pywal_enabled())
+
+    def test_new_palette_restarts_only_an_active_waybar_service(self):
+        calls = []
+        def process(argv, timeout, active=0, wal=0):
+            calls.append(argv)
+            code = wal if argv[0] == "wal" else active if "is-active" in argv else 0
+            return self.completed(argv, code)
+        with patch.dict(os.environ, {"WALLPICK_PYWAL": "1"}), \
+             patch.object(actions.shutil, "which", side_effect=lambda name: name):
+            with patch.object(actions, "run_process", side_effect=process):
+                actions.optional_pywal(Path("wall.png"))
+            self.assertEqual(calls[0], ["wal", "-ni", "wall.png"])
+            self.assertEqual(calls[-1], ["systemctl", "--user", "--no-block", "restart", "waybar.service"])
+            calls.clear()
+            with patch.object(actions, "run_process", side_effect=lambda argv, timeout: process(argv, timeout, active=3)):
+                actions.optional_pywal(Path("wall.png"))
+            self.assertNotIn("restart", calls[-1])
+            calls.clear()
+            with patch.object(actions, "run_process", side_effect=lambda argv, timeout: process(argv, timeout, wal=1)):
+                actions.optional_pywal(Path("wall.png"))
+            self.assertEqual(calls, [["wal", "-ni", "wall.png"]])
+
     def test_apply_reuses_daemon_and_replaces_managed_marker_only_after_success(self):
         source = self.image(self.root / "Pictures" / "random_konachan" / "selected.png")
         current = self.root / "Pictures" / ".current-wallpaper"

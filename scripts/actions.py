@@ -176,8 +176,18 @@ def copy_current_marker(source: Path, extension: str) -> Path:
             temporary.unlink(missing_ok=True)
 
 
+def pywal_enabled() -> bool:
+    setting = os.environ.get("WALLPICK_PYWAL", "auto")
+    if setting in ("0", "1"):
+        return setting == "1"
+    # Follow an existing pywal setup, as the original wallset did, without
+    # introducing pywal on desktops that do not already use it.
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    return (cache / "wal" / "colors.json").is_file()
+
+
 def optional_pywal(path: Path) -> None:
-    if os.environ.get("WALLPICK_PYWAL") != "1":
+    if not pywal_enabled():
         return
     command = shutil.which("wal")
     if not command:
@@ -187,6 +197,23 @@ def optional_pywal(path: Path) -> None:
         result = run_process([command, "-ni", str(path)], 30)
         if result.returncode:
             print("wallpick: pywal could not update the palette", file=sys.stderr)
+            return
+    except ActionError as error:
+        print(f"wallpick: {error}", file=sys.stderr)
+        return
+    reload_waybar()
+
+
+def reload_waybar() -> None:
+    # Waybar reads the pywal CSS only when it starts. Restart it as wallset did,
+    # but only when it runs as an active systemd user service.
+    command = shutil.which("systemctl")
+    if not command:
+        return
+    try:
+        if run_process([command, "--user", "is-active", "--quiet", "waybar.service"], 5).returncode:
+            return
+        run_process([command, "--user", "--no-block", "restart", "waybar.service"], 5)
     except ActionError as error:
         print(f"wallpick: {error}", file=sys.stderr)
 

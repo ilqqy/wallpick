@@ -116,13 +116,13 @@ Set these variables before starting Wallpick. Run `wallpick stop` first if it is
 | `WALLPICK_PICTURES_DIR` | `~/Pictures` | Root for downloads, favorites, and current wallpaper tracking |
 | `WALLPICK_MIN_WIDTH` | `1920` | Minimum width for remote results |
 | `WALLPICK_MIN_HEIGHT` | `1080` | Minimum height for remote results |
-| `WALLPICK_PYWAL` | `0` | Set to `1` to generate a pywal palette after applying |
+| `WALLPICK_PYWAL` | `auto` | Regenerate the pywal palette after applying. `auto` does so only if `~/.cache/wal/colors.json` already exists; `1` always, `0` never |
 | `WALLPICK_WAL_COLORS` | `~/.cache/wal/colors.json` | pywal palette the interface takes its colours from; it updates live when wal rewrites it |
 | `WALLPICK_REDUCED_MOTION` | `0` | Set to `1` to stop ambient and spring animations |
 
 For example: `WALLPICK_PICTURES_DIR="$HOME/Pictures/Wallpick" nix run github:ilqqy/wallpick`.
 
-Palette generation does not restart Waybar. Applications that use pywal colors need their own reload hook.
+After regenerating the palette, Wallpick restarts `waybar.service` if it is an active systemd user service, so the bar picks up the new colors. Other applications that use pywal colors need their own reload hook.
 
 ## Development
 
