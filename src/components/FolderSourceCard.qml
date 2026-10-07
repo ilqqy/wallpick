@@ -8,27 +8,58 @@ FocusScope {
     property int count: 0
     property var previews: []
     property bool selected: false
+    // Remote sources download and apply immediately; local ones only select.
+    property bool remote: false
     property bool randomEnabled: true
     property bool reducedMotion: AppConfig.reducedMotion
     property bool hovered: area.containsMouse || shufflePointer.containsMouse
+    // Whether the latest activation came from the keyboard, so the receiver
+    // of the follow-up focus knows whether to show its focus ring.
+    property bool keyboardActivation: false
+    property bool pointerFocus: false
+    property bool tipReady: false
+    readonly property bool focusVisible: activeFocus && !shuffle.activeFocus && !pointerFocus
     readonly property bool opened: hovered || activeFocus || selected
+    readonly property string randomDescription: remote ? "Download and apply a new " + title + " wallpaper"
+                                                       : "Pick a random wallpaper from " + title
     signal clicked()
     signal randomClicked()
     activeFocusOnTab: true
     width: 145
     height: 102
-    transform: Translate {
-        y: root.selected ? -6 : 0
-        Behavior on y { NumberAnimation { duration: root.reducedMotion ? 0 : 300; easing.type: Easing.OutCubic } }
-    }
+    // Lifts the hovered card so its tooltip is not covered by later siblings.
+    z: hovered || activeFocus ? 2 : 0
+    transform: [
+        Translate {
+            y: root.selected ? -6 : 0
+            Behavior on y { NumberAnimation { duration: root.reducedMotion ? 0 : 300; easing.type: Easing.OutCubic } }
+        },
+        Translate {
+            y: area.pressed ? 1.5 : 0
+            Behavior on y { NumberAnimation { duration: root.reducedMotion ? 0 : 90; easing.type: Easing.OutQuad } }
+        }
+    ]
     Accessible.role: Accessible.Button
     Accessible.name: title
-    Accessible.description: count + " wallpapers"
-    Accessible.onPressAction: clicked()
+    Accessible.description: count === 1 ? "1 wallpaper" : count + " wallpapers"
+    Accessible.checkable: true
+    Accessible.checked: selected
+    Accessible.onPressAction: activate(true)
 
-    Keys.onReturnPressed: clicked()
-    Keys.onEnterPressed: clicked()
-    Keys.onSpacePressed: clicked()
+    function activate(viaKeyboard) {
+        keyboardActivation = viaKeyboard
+        clicked()
+    }
+    function activateRandom(viaKeyboard) {
+        if (!randomEnabled) return
+        keyboardActivation = viaKeyboard
+        randomClicked()
+    }
+
+    onActiveFocusChanged: if (!activeFocus) pointerFocus = false
+    Keys.onReturnPressed: activate(true)
+    Keys.onEnterPressed: activate(true)
+    Keys.onSpacePressed: activate(true)
 
     Rectangle {
         x: 3; y: 24; width: root.width - 6; height: 68
@@ -123,7 +154,11 @@ FocusScope {
             color: root.selected ? "#67c1d3df" : "#378fa3b5"
         }
         Text {
-            x: 11; anchors.verticalCenter: parent.verticalCenter
+            x: 11
+            // Stops short of the shuffle control instead of running under it.
+            width: shuffle.x - pocket.x - x - 6
+            anchors.verticalCenter: parent.verticalCenter
+            elide: Text.ElideRight
             text: root.title
             color: Theme.foreground
             font.pixelSize: 12
@@ -132,11 +167,13 @@ FocusScope {
     }
 
     Rectangle {
-        anchors.fill: parent
-        radius: 12
+        x: 0; y: 21
+        width: root.width; height: 75
+        radius: 15
         color: "transparent"
-        border.color: root.activeFocus ? Theme.foreground : "transparent"
-        border.width: 1
+        border.color: Theme.foreground
+        border.width: Theme.focusWidth
+        visible: root.focusVisible
         z: 8
     }
 
@@ -146,11 +183,17 @@ FocusScope {
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         z: 10
-        onClicked: { root.forceActiveFocus(); root.clicked() }
+        onClicked: {
+            root.pointerFocus = true
+            root.forceActiveFocus()
+            root.activate(false)
+        }
     }
 
     FocusScope {
         id: shuffle
+        property bool pointerFocus: false
+        readonly property bool focusVisible: activeFocus && !pointerFocus
         x: root.width - 39; y: 57
         width: 28; height: 28
         z: 11
@@ -159,18 +202,19 @@ FocusScope {
         activeFocusOnTab: enabled
         Accessible.role: Accessible.Button
         Accessible.name: "Random " + root.title
-        Accessible.description: root.hint
-        Accessible.onPressAction: if (enabled) root.randomClicked()
-        Keys.onReturnPressed: event => { if (enabled) root.randomClicked(); event.accepted = true }
-        Keys.onEnterPressed: event => { if (enabled) root.randomClicked(); event.accepted = true }
-        Keys.onSpacePressed: event => { if (enabled) root.randomClicked(); event.accepted = true }
+        Accessible.description: root.randomDescription
+        Accessible.onPressAction: root.activateRandom(true)
+        onActiveFocusChanged: if (!activeFocus) pointerFocus = false
+        Keys.onReturnPressed: event => { root.activateRandom(true); event.accepted = true }
+        Keys.onEnterPressed: event => { root.activateRandom(true); event.accepted = true }
+        Keys.onSpacePressed: event => { root.activateRandom(true); event.accepted = true }
 
         Rectangle {
             anchors.fill: parent
             radius: width / 2
-            color: shufflePointer.pressed ? "#576b7c" : shufflePointer.containsMouse || shuffle.activeFocus ? "#485e70" : "#273d4e"
-            border.color: shuffle.activeFocus ? Theme.foreground : "#738ba0b2"
-            border.width: 1
+            color: shufflePointer.pressed ? "#576b7c" : shufflePointer.containsMouse || shuffle.focusVisible ? "#485e70" : "#273d4e"
+            border.color: shuffle.focusVisible ? Theme.foreground : "#738ba0b2"
+            border.width: shuffle.focusVisible ? Theme.focusWidth : 1
         }
         Canvas {
             anchors.centerIn: parent
@@ -196,7 +240,51 @@ FocusScope {
             hoverEnabled: true
             cursorShape: shuffle.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
             enabled: shuffle.enabled
-            onClicked: { shuffle.forceActiveFocus(); root.randomClicked() }
+            onContainsMouseChanged: if (!containsMouse) root.tipReady = false
+            onClicked: {
+                // If the action disables this control, focus falls back to the
+                // card; keep that fallback free of a keyboard focus ring too.
+                root.pointerFocus = true
+                shuffle.pointerFocus = true
+                shuffle.forceActiveFocus()
+                root.activateRandom(false)
+            }
+        }
+    }
+
+    Timer {
+        interval: 450
+        running: shufflePointer.containsMouse && !root.tipReady
+        onTriggered: root.tipReady = true
+    }
+
+    // The same icon fetches-and-applies on remote sources but only selects on
+    // local ones, so the consequence is spelled out before the click.
+    Rectangle {
+        id: tip
+        readonly property real boundsWidth: root.parent ? root.parent.width : root.width
+        readonly property bool shown: shuffle.enabled && ((root.tipReady && shufflePointer.containsMouse) || shuffle.focusVisible)
+        width: Math.min(tipText.implicitWidth + 20, boundsWidth)
+        height: 26
+        x: Math.max(-root.x, Math.min(boundsWidth - root.x - width, shuffle.x + shuffle.width / 2 - width / 2))
+        y: 98
+        z: 20
+        radius: 7
+        color: "#f00b121a"
+        border.color: Theme.border
+        opacity: shown ? 1 : 0
+        visible: opacity > 0
+        Accessible.ignored: true
+        Behavior on opacity { NumberAnimation { duration: root.reducedMotion ? 0 : Theme.fast; easing.type: Easing.OutCubic } }
+
+        Text {
+            id: tipText
+            anchors.centerIn: parent
+            width: Math.min(implicitWidth, parent.width - 20)
+            elide: Text.ElideRight
+            text: root.randomDescription
+            color: Theme.foreground
+            font.pixelSize: 11
         }
     }
 }

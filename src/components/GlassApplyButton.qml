@@ -4,7 +4,9 @@ import ".."
 FocusScope {
     id: root
     property string text: "Apply wallpaper"
-    property bool reducedMotion: false
+    property bool reducedMotion: AppConfig.reducedMotion
+    property bool pointerFocus: false
+    readonly property bool focusVisible: activeFocus && !pointerFocus
     property real hoverAmount: pointer.containsMouse && enabled ? 1 : 0
     property real pressAmount: pointer.pressed && enabled ? 1 : 0
     signal clicked()
@@ -17,8 +19,9 @@ FocusScope {
     Accessible.role: Accessible.Button
     Accessible.name: text
     Accessible.onPressAction: if (enabled) clicked()
+    onActiveFocusChanged: if (!activeFocus) pointerFocus = false
 
-    Behavior on opacity { NumberAnimation { duration: root.reducedMotion ? 0 : 160; easing.type: Easing.OutQuad } }
+    Behavior on opacity { NumberAnimation { duration: root.reducedMotion ? 0 : Theme.fast; easing.type: Easing.OutQuad } }
     Behavior on scale { NumberAnimation { duration: root.reducedMotion ? 0 : 110; easing.type: Easing.OutQuad } }
     Behavior on hoverAmount { NumberAnimation { duration: root.reducedMotion ? 0 : 180; easing.type: Easing.OutCubic } }
     Behavior on pressAmount { NumberAnimation { duration: root.reducedMotion ? 0 : 90; easing.type: Easing.OutQuad } }
@@ -37,7 +40,7 @@ FocusScope {
         radius: height / 2
         clip: true
         border.width: 1
-        border.color: root.activeFocus ? Theme.foreground : root.hoverAmount > 0 ? "#aec2d2dd" : Theme.primaryGlassEdge
+        border.color: root.hoverAmount > 0 ? "#aec2d2dd" : Theme.primaryGlassEdge
         gradient: Gradient {
             GradientStop { position: 0; color: Theme.primaryGlassTop }
             GradientStop { position: 0.52; color: Theme.primaryGlassMiddle }
@@ -75,6 +78,9 @@ FocusScope {
 
     Text {
         anchors.centerIn: parent
+        width: Math.min(implicitWidth, root.width - 28)
+        horizontalAlignment: Text.AlignHCenter
+        elide: Text.ElideRight
         text: root.text
         color: "#f3f6f9"
         font.pixelSize: 15
@@ -87,9 +93,9 @@ FocusScope {
         anchors.margins: -3
         radius: height / 2
         color: "transparent"
-        border.width: 1
-        border.color: "#a9dce6ee"
-        visible: root.activeFocus
+        border.width: Theme.focusWidth
+        border.color: Theme.foreground
+        visible: root.focusVisible
     }
 
     MouseArea {
@@ -98,7 +104,11 @@ FocusScope {
         hoverEnabled: true
         cursorShape: root.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
         enabled: root.enabled
-        onClicked: { root.forceActiveFocus(); root.clicked() }
+        onClicked: {
+            root.pointerFocus = true
+            root.forceActiveFocus()
+            root.clicked()
+        }
     }
 
     Keys.onReturnPressed: event => { if (enabled) clicked(); event.accepted = true }

@@ -10,6 +10,9 @@ Item {
     property int entranceCount: 0
     readonly property int staggerMs: 55
     readonly property int glyphDurationMs: 900
+    readonly property real letterSpacing: -1.2
+    // Vertical centre of the capitals, for aligning neighbouring controls optically.
+    readonly property real capCenterY: settledTitle.y + settledTitle.baselineOffset - capMetrics.tightBoundingRect("H").height / 2
     readonly property int totalDurationMs: glyphDurationMs + Math.max(0, text.length - 1) * staggerMs + 50
     implicitWidth: settledTitle.implicitWidth
     implicitHeight: 66
@@ -44,6 +47,11 @@ Item {
         onTriggered: root.animating = false
     }
 
+    FontMetrics {
+        id: capMetrics
+        font: settledTitle.font
+    }
+
     Text {
         id: settledTitle
         x: 0; y: 6
@@ -53,7 +61,7 @@ Item {
         font.family: "DejaVu Sans"
         font.pixelSize: 39
         font.bold: true
-        font.letterSpacing: -1.2
+        font.letterSpacing: root.letterSpacing
         renderType: Text.NativeRendering
     }
 
@@ -61,17 +69,25 @@ Item {
     // animation; its shader and texture are destroyed once the title settles.
     Loader {
         active: root.animating
-        sourceComponent: Row {
+        sourceComponent: Item {
             x: 0; y: 6
-            spacing: -1.2
             Repeater {
                 model: root.text.length
                 delegate: Item {
                     id: glyph
                     property real progress: 0
                     readonly property real wetRadius: (0.34 + root.seeded(index * 1.7 + 3) * 0.12) * 39
+                    // Kerned prefix advance, so glyphs land exactly where the
+                    // settled title draws them and the hand-off does not jump.
+                    x: prefix.advanceWidth + index * root.letterSpacing
                     width: Math.max(1, glyphText.implicitWidth)
                     height: 49
+
+                    TextMetrics {
+                        id: prefix
+                        font: glyphText.font
+                        text: root.text.substring(0, index)
+                    }
 
                     Item {
                         id: maskItem
