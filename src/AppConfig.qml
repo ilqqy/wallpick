@@ -4,6 +4,8 @@ import Quickshell
 
 QtObject {
     readonly property string picturesDirectory: Quickshell.env("WALLPICK_PICTURES_DIR") || (Quickshell.env("HOME") + "/Pictures")
+    readonly property string cacheDirectory: Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache")
+    readonly property string walColorsPath: Quickshell.env("WALLPICK_WAL_COLORS") || (cacheDirectory + "/wal/colors.json")
     readonly property string pythonCommand: Quickshell.env("WALLPICK_PYTHON") || "python3"
     readonly property string backendPath: Quickshell.shellDir + "/../scripts/backend.py"
     readonly property string actionsPath: Quickshell.shellDir + "/../scripts/actions.py"

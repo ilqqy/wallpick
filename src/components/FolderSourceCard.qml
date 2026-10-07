@@ -64,8 +64,8 @@ FocusScope {
     Rectangle {
         x: 3; y: 24; width: root.width - 6; height: 68
         radius: 12
-        color: root.selected ? "#31475b" : "#223243"
-        border.color: root.selected ? "#9bacc1d3" : Theme.border
+        color: root.selected ? Theme.folderSelected : Theme.folder
+        border.color: root.selected ? Theme.selectedEdge : Theme.border
         border.width: 1
         Behavior on color { ColorAnimation { duration: root.reducedMotion ? 0 : 260; easing.type: Easing.OutCubic } }
     }
@@ -73,14 +73,14 @@ FocusScope {
     Rectangle {
         x: 4; y: 25; width: root.width - 8; height: 33
         radius: 11
-        color: "#526f89"
+        color: Theme.folderGlow
         opacity: root.selected ? 0.18 : 0
         Behavior on opacity { NumberAnimation { duration: root.reducedMotion ? 0 : 300; easing.type: Easing.OutCubic } }
     }
 
     Rectangle {
         x: 13; y: 25; width: root.width - 26; height: 1
-        color: root.selected ? "#6f9bb1c4" : "#367f94a9"
+        color: root.selected ? Theme.sheenStrong : Theme.sheen
     }
 
     Repeater {
@@ -113,8 +113,8 @@ FocusScope {
             Rectangle {
                 anchors.fill: parent
                 radius: 5
-                color: "#3a4d60"
-                border.color: "#90a5b7c7"
+                color: Theme.sheet
+                border.color: Theme.edge
                 border.width: 1
                 clip: true
                 Image {
@@ -145,13 +145,13 @@ FocusScope {
         Rectangle {
             anchors.fill: parent
             radius: 11
-            color: root.selected ? "#3d5368" : "#2b3d50"
-            border.color: root.selected ? "#a2bdcbd9" : "#607f91a1"
+            color: root.selected ? Theme.pocketSelected : Theme.pocket
+            border.color: root.selected ? Theme.selectedEdge : Theme.edge
             Behavior on color { ColorAnimation { duration: root.reducedMotion ? 0 : 260; easing.type: Easing.OutCubic } }
         }
         Rectangle {
             x: 12; y: 1; width: parent.width - 24; height: 1
-            color: root.selected ? "#67c1d3df" : "#378fa3b5"
+            color: root.selected ? Theme.sheenStrong : Theme.sheen
         }
         Text {
             x: 11
@@ -212,20 +212,23 @@ FocusScope {
         Rectangle {
             anchors.fill: parent
             radius: width / 2
-            color: shufflePointer.pressed ? "#576b7c" : shufflePointer.containsMouse || shuffle.focusVisible ? "#485e70" : "#273d4e"
-            border.color: shuffle.focusVisible ? Theme.foreground : "#738ba0b2"
+            color: shufflePointer.pressed ? Theme.controlPressed : shufflePointer.containsMouse || shuffle.focusVisible ? Theme.controlHover : Theme.control
+            border.color: shuffle.focusVisible ? Theme.foreground : Theme.edge
             border.width: shuffle.focusVisible ? Theme.focusWidth : 1
         }
         Canvas {
+            id: shuffleIcon
+            readonly property color stroke: Theme.foreground
             anchors.centerIn: parent
             width: 17; height: 17
+            onStrokeChanged: requestPaint()
             onPaint: {
                 const c = getContext("2d")
                 c.clearRect(0, 0, width, height)
                 c.lineWidth = 1.55
                 c.lineCap = "round"
                 c.lineJoin = "round"
-                c.strokeStyle = "#e4edf4"
+                c.strokeStyle = stroke
                 c.beginPath()
                 c.moveTo(2, 4); c.lineTo(4, 4); c.bezierCurveTo(7, 4, 9, 13, 13, 13); c.lineTo(15, 13)
                 c.moveTo(12.5, 10.5); c.lineTo(15, 13); c.lineTo(12.5, 15.5)
@@ -270,7 +273,7 @@ FocusScope {
         y: 98
         z: 20
         radius: 7
-        color: "#f00b121a"
+        color: Theme.popover
         border.color: Theme.border
         opacity: shown ? 1 : 0
         visible: opacity > 0

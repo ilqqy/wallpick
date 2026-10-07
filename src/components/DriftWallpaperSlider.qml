@@ -154,12 +154,12 @@ FocusScope {
         anchors.top: parent.top
         height: Math.max(96, root.height - 37)
         radius: 13
-        color: "#7815202c"
-        border.color: "#50697f91"
+        color: Theme.stage
+        border.color: Theme.border
 
         Rectangle {
             x: 17; y: 1; width: parent.width - 34; height: 1
-            color: "#397d96ab"
+            color: Theme.sheen
         }
 
         Text {
@@ -218,7 +218,7 @@ FocusScope {
                             radius: 9
                             // Opaque, so a loading or broken card never shows its neighbours through it.
                             color: Theme.cardBase
-                            border.color: card.cardIndex === root.activeIndex ? "#bacbdae6" : "#667d90a2"
+                            border.color: card.cardIndex === root.activeIndex ? Theme.selectedEdge : Theme.border
                             border.width: 1
                             layer.enabled: !root.reducedMotion && card.visible && GraphicsInfo.api !== GraphicsInfo.Software
                             layer.effect: MultiEffect {
@@ -287,8 +287,8 @@ FocusScope {
                 anchors.left: parent.left
                 gradient: Gradient {
                     orientation: Gradient.Horizontal
-                    GradientStop { position: 0; color: "#8a14212e" }
-                    GradientStop { position: 1; color: "#0014212e" }
+                    GradientStop { position: 0; color: Theme.fade }
+                    GradientStop { position: 1; color: Theme.alpha(Theme.fade, 0) }
                 }
             }
             Rectangle {
@@ -296,8 +296,8 @@ FocusScope {
                 anchors.right: parent.right
                 gradient: Gradient {
                     orientation: Gradient.Horizontal
-                    GradientStop { position: 0; color: "#0014212e" }
-                    GradientStop { position: 1; color: "#8a14212e" }
+                    GradientStop { position: 0; color: Theme.alpha(Theme.fade, 0) }
+                    GradientStop { position: 1; color: Theme.fade }
                 }
             }
         }

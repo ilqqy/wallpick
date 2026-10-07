@@ -117,6 +117,7 @@ Set these variables before starting Wallpick. Run `wallpick stop` first if it is
 | `WALLPICK_MIN_WIDTH` | `1920` | Minimum width for remote results |
 | `WALLPICK_MIN_HEIGHT` | `1080` | Minimum height for remote results |
 | `WALLPICK_PYWAL` | `0` | Set to `1` to generate a pywal palette after applying |
+| `WALLPICK_WAL_COLORS` | `~/.cache/wal/colors.json` | pywal palette the interface takes its colours from; it updates live when wal rewrites it |
 | `WALLPICK_REDUCED_MOTION` | `0` | Set to `1` to stop ambient and spring animations |
 
 For example: `WALLPICK_PICTURES_DIR="$HOME/Pictures/Wallpick" nix run github:ilqqy/wallpick`.

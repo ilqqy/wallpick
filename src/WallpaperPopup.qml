@@ -31,12 +31,16 @@ PanelWindow {
     // action row never ends up off-screen.
     readonly property int screenWidth: screen ? screen.width : 1920
     readonly property int screenHeight: screen ? screen.height : 1080
+    // Popup and content margins (40) plus header, sources, actions and gaps (322).
+    readonly property int chromeHeight: 362
+    // Tall enough for a full-width 16:9 preview above a full-height gallery.
+    readonly property int preferredHeight: Math.ceil(chromeHeight + (implicitWidth - 48) * 9 / 16 + 8 + 220)
     property bool opened: false
     signal requestClose()
 
     visible: opened
     implicitWidth: Math.min(910, screenWidth - margins.right - 18)
-    implicitHeight: Math.min(890, screenHeight - margins.top - 12)
+    implicitHeight: Math.min(preferredHeight, screenHeight - margins.top - 12)
     color: "transparent"
     anchors.top: true
     anchors.right: true
@@ -163,7 +167,7 @@ PanelWindow {
         anchors.fill: parent
         radius: 21
         color: Theme.background
-        border.color: "#748a9caf"
+        border.color: Theme.edge
         border.width: 1
     }
 
@@ -172,14 +176,14 @@ PanelWindow {
         height: 130
         radius: 20
         gradient: Gradient {
-            GradientStop { position: 0; color: "#1f9cb7ce" }
-            GradientStop { position: 1; color: "#009cb7ce" }
+            GradientStop { position: 0; color: Theme.glow }
+            GradientStop { position: 1; color: Theme.alpha(Theme.glow, 0) }
         }
     }
 
     Rectangle {
         x: 28; y: 1; width: window.width - 56; height: 1
-        color: "#537f9aaf"
+        color: Theme.sheen
     }
 
     FocusScope {
@@ -200,8 +204,10 @@ PanelWindow {
         Item {
             id: content
             // Header, sources and actions keep their size; the preview and the
-            // gallery share whatever height the screen leaves.
+            // gallery share whatever height the screen leaves. The gallery
+            // gives way first so the preview can stay 16:9 at full width.
             readonly property real mediaHeight: height - header.height - sources.height - bottom.height - 43
+            readonly property real heroFullHeight: (width - 8) * 9 / 16 + 8
             anchors.fill: parent
             anchors.margins: 20
 
@@ -227,13 +233,15 @@ PanelWindow {
                 id: hero
                 anchors.top: header.bottom
                 anchors.topMargin: 10
-                anchors.left: parent.left
-                anchors.right: parent.right
+                anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: sources.top
                 anchors.bottomMargin: 13
+                // The image area is 16:9, like the desktop it previews; on very
+                // short screens it narrows rather than distorting the crop.
+                width: Math.min(parent.width, Math.round((height - 8) * 16 / 9 + 8))
                 radius: 16
-                color: "#a014202c"
-                border.color: "#8492a8b9"
+                color: Theme.well
+                border.color: Theme.edge
                 Accessible.role: Accessible.Graphic
                 Accessible.name: gallery.selectedItem && !window.previewError ? "Preview of " + gallery.selectedItem.name : window.heroPlaceholder
 
@@ -246,8 +254,8 @@ PanelWindow {
                         id: heroImage
                         anchors.fill: parent
                         source: window.displayUrl
-                        sourceSize.width: 1200
-                        sourceSize.height: 700
+                        sourceSize.width: 1600
+                        sourceSize.height: 900
                         asynchronous: true
                         retainWhileLoading: true
                         fillMode: Image.PreserveAspectCrop
@@ -265,8 +273,8 @@ PanelWindow {
                     Image {
                         id: oldImage
                         anchors.fill: parent
-                        sourceSize.width: 1200
-                        sourceSize.height: 700
+                        sourceSize.width: 1600
+                        sourceSize.height: 900
                         asynchronous: true
                         fillMode: Image.PreserveAspectCrop
                         opacity: 0
@@ -277,8 +285,8 @@ PanelWindow {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                         height: 54
                         gradient: Gradient {
-                            GradientStop { position: 0; color: "#00070c13" }
-                            GradientStop { position: 1; color: "#55070c13" }
+                            GradientStop { position: 0; color: Theme.alpha(Theme.shade, 0) }
+                            GradientStop { position: 1; color: Theme.shade }
                         }
                     }
                 }
@@ -298,8 +306,8 @@ PanelWindow {
                     anchors.top: parent.top
                     anchors.topMargin: 15
                     width: 124; height: 70; radius: 8
-                    color: "#ad172331"
-                    border.color: "#859aaabc"
+                    color: Theme.field
+                    border.color: Theme.edge
                     // Without an image there is nothing meaningful to badge.
                     visible: !!service.catalog.current && currentThumb.status !== Image.Error
                     Accessible.role: Accessible.Graphic
@@ -325,7 +333,7 @@ PanelWindow {
                             anchors.bottom: parent.bottom
                             anchors.bottomMargin: 3
                             text: service.currentUncertain ? "LAST KNOWN" : "CURRENT"
-                            color: "white"
+                            color: Theme.foreground
                             font.pixelSize: 10
                             font.weight: Font.DemiBold
                             font.letterSpacing: 0.4
@@ -370,7 +378,7 @@ PanelWindow {
                 anchors.bottomMargin: 8
                 anchors.left: parent.left
                 anchors.right: parent.right
-                height: Math.round(Math.max(170, Math.min(220, content.mediaHeight * 0.42)))
+                height: Math.round(Math.max(170, Math.min(220, content.mediaHeight - content.heroFullHeight)))
                 items: window.sourceItems(window.sourceKey)
             }
 
@@ -388,12 +396,12 @@ PanelWindow {
                     width: parent.width
                     height: 43
                     radius: 11
-                    color: "#a11d2a38"
-                    border.color: query.activeFocus ? "#b4bccbd8" : Theme.border
+                    color: Theme.field
+                    border.color: query.activeFocus ? Theme.focusEdge : Theme.border
                     border.width: 1
                     Rectangle {
                         x: 14; y: 1; width: parent.width - 28; height: 1
-                        color: "#397f94a9"
+                        color: Theme.sheen
                     }
                     // The whole field, padding included, focuses the input.
                     MouseArea {

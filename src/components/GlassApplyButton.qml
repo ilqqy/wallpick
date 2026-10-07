@@ -27,51 +27,43 @@ FocusScope {
     Behavior on pressAmount { NumberAnimation { duration: root.reducedMotion ? 0 : 90; easing.type: Easing.OutQuad } }
 
     Rectangle {
-        x: 3; y: 4
-        width: root.width - 6; height: root.height - 1
-        radius: height / 2
-        color: "#34060e17"
-        opacity: 0.65 + root.hoverAmount * 0.25
-    }
-
-    Rectangle {
         id: glass
         anchors.fill: parent
         radius: height / 2
-        clip: true
         border.width: 1
-        border.color: root.hoverAmount > 0 ? "#aec2d2dd" : Theme.primaryGlassEdge
+        border.color: root.hoverAmount > 0 ? Theme.primaryGlassEdgeHover : Theme.primaryGlassEdge
         gradient: Gradient {
             GradientStop { position: 0; color: Theme.primaryGlassTop }
             GradientStop { position: 0.52; color: Theme.primaryGlassMiddle }
             GradientStop { position: 1; color: Theme.primaryGlassBottom }
         }
 
+        // Concentric with the pill, so the sheen never pokes past its rounded ends.
         Rectangle {
-            x: 2; y: 1
-            width: parent.width - 4; height: 18
-            radius: 17
+            anchors.fill: parent
+            anchors.margins: 1
+            radius: height / 2
             gradient: Gradient {
-                GradientStop { position: 0; color: "#35e0e8ef" }
-                GradientStop { position: 1; color: "#00e0e8ef" }
+                GradientStop { position: 0; color: Theme.primaryGlassSheen }
+                GradientStop { position: 0.45; color: Theme.alpha(Theme.primaryGlassSheen, 0) }
             }
             opacity: 0.65 + root.hoverAmount * 0.3
         }
         Rectangle {
             x: 18; y: 1
             width: parent.width - 36; height: 1
-            color: "#80cbd8e3"
+            color: Theme.primaryGlassLine
             opacity: 0.6 + root.hoverAmount * 0.35
         }
         Rectangle {
             x: 27; y: parent.height - 2
             width: parent.width - 54; height: 1
-            color: "#24495e70"
+            color: Theme.primaryGlassFloor
         }
         Rectangle {
             anchors.fill: parent
             radius: parent.radius
-            color: "#370c1824"
+            color: Theme.alpha(Theme.base, 0.22)
             opacity: root.pressAmount
         }
     }
@@ -82,7 +74,7 @@ FocusScope {
         horizontalAlignment: Text.AlignHCenter
         elide: Text.ElideRight
         text: root.text
-        color: "#f3f6f9"
+        color: Theme.primaryGlassText
         font.pixelSize: 15
         font.weight: Font.DemiBold
         renderType: Text.NativeRendering
