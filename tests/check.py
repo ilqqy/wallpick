@@ -98,8 +98,18 @@ with tempfile.TemporaryDirectory(prefix="wallpick-test-") as directory:
     print("PASS: replaced current marker and disappearing gallery files preserve catalog")
 
     stub = root / "actions-stub.py"
-    stub.write_text(f"#!{sys.executable}\n" + '''import json, os, pathlib, sys
+    stub.write_text(f"#!{sys.executable}\n" + '''import json, os, pathlib, sys, time
 root = pathlib.Path(os.environ['WALLPICK_TEST_ROOT'])
+if sys.argv[1] == 'search':
+    (root / 'search-argv.json').write_text(json.dumps(sys.argv[1:]))
+    source, page = sys.argv[3], int(sys.argv[4])
+    if sys.argv[5:] == ['first']:
+        time.sleep(1)
+    # Page 2 repeats one result from page 1, as remote sources sometimes do.
+    ids = range((page - 1) * 3, page * 3 + (1 if page == 1 else 0))
+    print(json.dumps({'source': source, 'page': page, 'more': page < 2,
+                      'results': [{'key': f'{source}:{i}', 'id': str(i)} for i in ids]}))
+    raise SystemExit(0)
 (root / 'argv.json').write_text(json.dumps(sys.argv[1:]))
 marker = root / 'pictures/.current-wallpaper/wallpaper.jpg'
 if (root / 'mode').read_text() == 'fail':
@@ -148,6 +158,29 @@ marker.write_bytes(image.read_bytes())
                                  and s["catalog"]["appliedPath"].endswith("new.jpg"))
             assert not recovered["error"] and not recovered["uncertain"]
             print("PASS: asynchronous failure, persistent error, last-known current, literal argv, recovery")
+
+            def search_state():
+                return json.loads(ipc("searchState"))
+            ipc("search")
+            found = wait_for(search_state, lambda s: not s["searching"] and s["page"] == 1)
+            assert found["keys"] == ["anime:0", "anime:1", "anime:2", "anime:3"] and found["more"], found
+            assert not found["busy"], "Search must not occupy the action slot"
+            args = json.loads((root / "search-argv.json").read_text())
+            assert args == ["search", "--", "anime", "1", "tag;literal", "-chibi"], args
+            ipc("searchMore")
+            more = wait_for(search_state, lambda s: not s["searching"] and s["page"] == 2)
+            assert more["keys"] == [f"anime:{i}" for i in range(6)] and not more["more"], more
+            ipc("supersede")
+            latest = wait_for(search_state, lambda s: not s["searching"] and s["source"] == "general", seconds=15)
+            assert latest["keys"] == ["general:0", "general:1", "general:2", "general:3"], latest
+            time.sleep(1.2)
+            assert search_state()["source"] == "general", "A superseded search must not overwrite the latest"
+            ipc("search")
+            ipc("clearSearch")
+            time.sleep(1.2)
+            cleared = search_state()
+            assert not cleared["searching"] and not cleared["keys"] and not cleared["source"], cleared
+            print("PASS: search lists results beside actions, appends deduplicated pages, supersedes and cancels")
         except Exception:
             log.flush()
             log.seek(0)
@@ -206,6 +239,27 @@ marker.write_bytes(image.read_bytes())
                 preview_ipc("randomSource", key)
                 assert preview_state()["command"] == command
             print("PASS: category random selects local images and routes all remote commands")
+            service_command = preview_state()["command"]
+            preview_ipc("searchResults")
+            found = preview_state()
+            assert found["showing"] and found["source"] == "anime" and found["searched"] == "anime:bleach -chibi", found
+            assert found["command"] == service_command, "Search must not run a random fetch"
+            assert found["key"] == "anime:1" and found["remote"] and found["path"] == "", found
+            applied_before = found["applications"]
+            preview_ipc("apply")
+            assert preview_state()["resultAction"] == "apply:anime:1"
+            preview_ipc("favorite")
+            assert preview_state()["resultAction"] == "favorite:anime:1"
+            assert preview_state()["applications"] == applied_before, "A remote result must not be applied as a file"
+            preview_ipc("selectIndex", "1")
+            saved = preview_state()
+            assert saved["key"] == "anime:2" and not saved["remote"] and saved["applied"], saved
+            assert saved["path"] == "/saved/konachan_2.png", saved
+            print("PASS: search lists results without applying; Apply/Favorite download only the chosen result")
+            preview_ipc("closeResults")
+            closed = preview_state()
+            assert not closed["showing"] and closed["source"] == "favorites", closed
+            print("PASS: leaving results returns to the previous collection")
         except Exception:
             log.flush()
             log.seek(0)

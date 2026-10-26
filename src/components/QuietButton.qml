@@ -6,12 +6,15 @@ FocusScope {
     property string text: ""
     property bool selected: false
     property real radius: 10
+    // Optional glyph drawn before the label.
+    property Component icon: null
     // Set by mouse clicks so the keyboard focus ring only appears for
     // keyboard navigation, like :focus-visible.
     property bool pointerFocus: false
     readonly property bool focusVisible: activeFocus && !pointerFocus
+    readonly property real iconSpace: iconLoader.active ? iconLoader.width + content.spacing : 0
     signal clicked()
-    implicitWidth: label.implicitWidth + 28
+    implicitWidth: label.implicitWidth + iconSpace + 28
     implicitHeight: 43
     activeFocusOnTab: enabled
     opacity: enabled ? 1 : 0.48
@@ -30,16 +33,28 @@ FocusScope {
         border.color: root.focusVisible ? Theme.foreground : root.selected ? Theme.accent : Theme.border
         border.width: root.focusVisible ? Theme.focusWidth : 1
     }
-    Text {
-        id: label
+    Row {
+        id: content
         anchors.centerIn: parent
-        width: Math.min(implicitWidth, root.width - 16)
-        horizontalAlignment: Text.AlignHCenter
-        elide: Text.ElideRight
-        text: root.text
-        color: Theme.foreground
-        font.pixelSize: 12
-        font.weight: Font.Medium
+        spacing: 7
+        Loader {
+            id: iconLoader
+            anchors.verticalCenter: parent.verticalCenter
+            active: root.icon !== null
+            visible: active
+            sourceComponent: root.icon
+        }
+        Text {
+            id: label
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.min(implicitWidth, root.width - 16 - root.iconSpace)
+            horizontalAlignment: Text.AlignHCenter
+            elide: Text.ElideRight
+            text: root.text
+            color: Theme.foreground
+            font.pixelSize: 12
+            font.weight: Font.Medium
+        }
     }
     MouseArea {
         id: pointer

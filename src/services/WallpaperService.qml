@@ -20,7 +20,21 @@ Item {
     property bool hasSeenCurrent: false
     property bool refreshPending: false
 
+    // Search lists remote wallpapers; nothing is downloaded until one is
+    // applied or favorited. It runs beside actions and never sets busy.
+    property var results: []
+    property string resultsSource: ""
+    property var resultsWords: []
+    property int resultsPage: 0
+    property bool resultsMore: false
+    property bool searching: false
+    property string searchError: ""
+    property var searchRequest: null
+    property var pendingSearch: null
+    property string searchOutput: ""
+
     signal actionFinished(string operation, bool success)
+    signal searchFinished(bool success)
 
     function refresh() {
         if (scanProcess.running) {
@@ -64,6 +78,70 @@ Item {
 
     function favoriteCurrent() {
         return run("favorite-current", [], "Favorite", "")
+    }
+
+    function search(source, words) {
+        if (!["anime", "general", "gooner"].includes(source))
+            return false
+        results = []
+        resultsSource = source
+        resultsWords = words
+        resultsPage = 0
+        resultsMore = false
+        searchError = ""
+        startSearch({ source: source, words: words, page: 1 })
+        return true
+    }
+
+    function searchMore() {
+        if (searching || !resultsMore || !resultsSource)
+            return false
+        startSearch({ source: resultsSource, words: resultsWords, page: resultsPage + 1 })
+        return true
+    }
+
+    function clearSearch() {
+        pendingSearch = null
+        searchRequest = null
+        searching = false
+        if (searchProcess.running) searchProcess.running = false
+        results = []
+        resultsSource = ""
+        resultsWords = []
+        resultsPage = 0
+        resultsMore = false
+        searchError = ""
+    }
+
+    function startSearch(request) {
+        searching = true
+        // A newer search replaces one in flight; its output is discarded.
+        if (searchProcess.running) {
+            pendingSearch = request
+            searchProcess.running = false
+            return
+        }
+        pendingSearch = null
+        searchRequest = request
+        searchOutput = ""
+        const argv = ["timeout", "--signal=TERM", "--kill-after=5s", "90s",
+                      AppConfig.pythonCommand, AppConfig.actionsPath, "search", "--",
+                      request.source, String(request.page)]
+        for (const word of request.words)
+            argv.push(word)
+        searchProcess.exec(argv)
+    }
+
+    function applyResult(result) {
+        if (!result || !result.remote)
+            return false
+        return run("apply-result", [result.source, result.id, result.full], "ApplyResult", "")
+    }
+
+    function favoriteResult(result) {
+        if (!result || !result.remote)
+            return false
+        return run("favorite-result", [result.source, result.id, result.full], "FavoriteResult", "")
     }
 
     function favoriteSelected(path) {
@@ -125,6 +203,47 @@ Item {
     }
 
     Process {
+        id: searchProcess
+        stdout: StdioCollector { onStreamFinished: service.searchOutput = text }
+        stderr: StdioCollector {
+            onStreamFinished: {
+                if (text.trim())
+                    console.warn("wallpick search:", text.trim())
+            }
+        }
+        onExited: (exitCode, exitStatus) => {
+            const request = service.searchRequest
+            service.searchRequest = null
+            if (service.pendingSearch) {
+                Qt.callLater(() => { if (service.pendingSearch) service.startSearch(service.pendingSearch) })
+                return
+            }
+            // Cleared while running: the output belongs to nobody.
+            if (!request)
+                return
+            service.searching = false
+            let parsed = null
+            if (exitCode === 0) {
+                try { parsed = JSON.parse(service.searchOutput) } catch (exception) { parsed = null }
+            }
+            if (!parsed || !Array.isArray(parsed.results)) {
+                service.searchError = exitCode === 124 ? "The search timed out. Please try again."
+                                    : "Search failed. Check the network or try other tags."
+                service.searchFinished(false)
+                return
+            }
+            // Pages can overlap when the source changes between requests.
+            const seen = new Set(request.page === 1 ? [] : service.results.map(result => result.key))
+            const added = parsed.results.filter(result => !seen.has(result.key) && seen.add(result.key))
+            service.results = request.page === 1 ? added : service.results.concat(added)
+            service.resultsPage = request.page
+            service.resultsMore = !!parsed.more && added.length > 0
+            service.searchError = ""
+            service.searchFinished(true)
+        }
+    }
+
+    Process {
         id: actionProcess
         stdout: StdioCollector { onStreamFinished: service.actionOutput = text }
         stderr: StdioCollector { onStreamFinished: service.actionError = text }
@@ -134,14 +253,16 @@ Item {
             if (exitCode !== 0 && completedOperation.startsWith("random") && service.hasSeenCurrent)
                 service.currentUncertain = true
             if (exitCode === 0) {
-                service.message = completedOperation === "Apply" ? "Wallpaper applied" :
-                                  completedOperation === "Favorite" ? "Added to favorites" :
-                                  "Wallpaper fetched and applied"
+                service.message = completedOperation === "Apply" || completedOperation === "ApplyResult" ? "Wallpaper applied" :
+                                  completedOperation === "Favorite" || completedOperation === "FavoriteResult" ? "Added to favorites" :
+                                  "Random wallpaper fetched and applied"
                 service.error = ""
             } else {
                 service.error = exitCode === 124 ? "The request timed out. Please try again." :
                                 completedOperation === "Apply" ? "Could not apply this wallpaper." :
                                 completedOperation === "Favorite" ? "Could not save this favorite." :
+                                completedOperation === "ApplyResult" ? "Could not download this wallpaper." :
+                                completedOperation === "FavoriteResult" ? "Could not download this favorite." :
                                 "Could not fetch a wallpaper. Try other tags or try again."
                 console.warn("wallpick", completedOperation, "failed:", service.actionError, service.actionOutput)
             }

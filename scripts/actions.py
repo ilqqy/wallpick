@@ -29,6 +29,12 @@ MAX_IMAGE_BYTES = 100 * 1024 * 1024
 MAX_IMAGE_PIXELS = 80_000_000
 IMAGE_EXTENSION = {"PNG": "png", "JPEG": "jpg"}
 MANAGED_MARKERS = ("wallpaper.png", "wallpaper.jpg", "wallpaper.jpeg")
+SEARCH_LIMIT = 24
+KONACHAN = {"anime": ("konachan.net", "safe"), "gooner": ("konachan.com", "questionable")}
+SOURCE_HOST = {"anime": "konachan.net", "general": "wallhaven.cc", "gooner": "konachan.com"}
+# Search results are saved under a stable name so a result that was already
+# downloaded is reused, and the UI can recognise it in the local catalog.
+RESULT_PREFIX = {"anime": "konachan", "general": "wallhaven", "gooner": "konachan"}
 
 
 class ActionError(Exception):
@@ -319,7 +325,8 @@ def resolve_konachan_tag(site: str, word: str) -> str:
     return word
 
 
-def konachan_query(site: str, rating: str, words: list[str], minimum: tuple[int, int]) -> str:
+def konachan_query(site: str, rating: str, words: list[str], minimum: tuple[int, int],
+                   *, order: str = "random", limit: int = 1, page: int = 1) -> str:
     encoded = []
     for raw in words:
         normalized = raw.replace(" ", "_")
@@ -329,20 +336,22 @@ def konachan_query(site: str, rating: str, words: list[str], minimum: tuple[int,
             raise ActionError("A negative tag needs a name")
         resolved = resolve_konachan_tag(site, word)
         encoded.append(("-" if negative else "") + quote(resolved, safe=""))
-    tags = "order:random+rating:" + rating
+    tags = f"order:{order}+rating:" + rating
     if rating == "questionable":
         tags += "+-loli+-child"
     for tag in encoded:
         tags += "+" + tag
     tags += f"+width%3A%3E%3D{minimum[0]}+height%3A%3E%3D{minimum[1]}"
-    return f"https://{site}/post.json?tags={tags}&limit=1"
+    return f"https://{site}/post.json?tags={tags}&limit={limit}" + (f"&page={page}" if page > 1 else "")
 
 
-def wallhaven_query(words: list[str], minimum: tuple[int, int]) -> str:
+def wallhaven_query(words: list[str], minimum: tuple[int, int],
+                    *, sorting: str = "random", page: int = 1) -> str:
     query = quote(" ".join(words), safe="")
     return (
         f"https://wallhaven.cc/api/v1/search?q={query}&categories=100&purity=100"
-        f"&sorting=random&atleast={minimum[0]}x{minimum[1]}&ratios=16x9,16x10"
+        f"&sorting={sorting}&atleast={minimum[0]}x{minimum[1]}&ratios=16x9,16x10"
+        + (f"&page={page}" if page > 1 else "")
     )
 
 
@@ -366,7 +375,7 @@ def image_url(command: str, words: list[str], minimum: tuple[int, int]) -> tuple
     return https_url(url, site), source
 
 
-def download_image(url: str, source: str, minimum: tuple[int, int]) -> Path:
+def download_image(url: str, source: str, minimum: tuple[int, int], stem: str | None = None) -> Path:
     directory = backend.pictures_dir() / backend.FOLDERS[source]
     directory.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -381,8 +390,9 @@ def download_image(url: str, source: str, minimum: tuple[int, int]) -> Path:
         if result.returncode:
             raise ActionError("Wallpaper download failed")
         extension, _ = validate_image(temporary, minimum=minimum)
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        destination = directory / f"wallpaper_{timestamp}_{secrets.token_hex(8)}.{extension}"
+        if not stem:
+            stem = f"wallpaper_{time.strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(8)}"
+        destination = directory / f"{stem}.{extension}"
         os.replace(temporary, destination)
         temporary = None
         return destination
@@ -399,12 +409,142 @@ def random_wallpaper(command: str, words: list[str]) -> dict:
     return {**applied, "source": source}
 
 
+def search_source(raw: str) -> str:
+    if raw not in SOURCE_HOST:
+        raise ActionError(f"Unknown search source: {raw}")
+    return raw
+
+
+def result_id(raw: object) -> str:
+    value = str(raw)
+    # The identifier becomes part of a filename, so only plain IDs are allowed.
+    if not value.isascii() or not value.isalnum() or len(value) > 32:
+        raise ActionError("Wallpaper service returned an invalid wallpaper ID")
+    return value
+
+
+def konachan_result(post: object, source: str, site: str) -> dict:
+    if not isinstance(post, dict):
+        raise ActionError("Konachan returned an invalid post")
+    identifier = result_id(post.get("id"))
+    full = https_url(post.get("file_url"), site)
+    width, height = post.get("width"), post.get("height")
+    if not isinstance(width, int) or not isinstance(height, int):
+        raise ActionError("Konachan post has no dimensions")
+    return {
+        "id": identifier,
+        "key": f"{source}:{identifier}",
+        "stem": f"{RESULT_PREFIX[source]}_{identifier}",
+        "source": source,
+        "name": f"Konachan #{identifier}",
+        # The 300 px preview suits gallery cards; the 1500 px sample the hero.
+        "url": https_url(post.get("preview_url"), site),
+        "preview": https_url(post.get("sample_url") or post.get("file_url"), site),
+        "full": full,
+        "width": width,
+        "height": height,
+    }
+
+
+def wallhaven_result(post: object) -> dict:
+    if not isinstance(post, dict) or not isinstance(post.get("thumbs"), dict):
+        raise ActionError("Wallhaven returned an invalid wallpaper")
+    if post.get("file_type") not in ("image/png", "image/jpeg"):
+        raise ActionError("Only PNG and JPEG wallpapers are supported")
+    identifier = result_id(post.get("id"))
+    full = https_url(post.get("path"), "wallhaven.cc")
+    width, height = post.get("dimension_x"), post.get("dimension_y")
+    if not isinstance(width, int) or not isinstance(height, int):
+        raise ActionError("Wallhaven wallpaper has no dimensions")
+    return {
+        "id": identifier,
+        "key": f"general:{identifier}",
+        "stem": f"{RESULT_PREFIX['general']}_{identifier}",
+        "source": "general",
+        "name": f"Wallhaven {identifier}",
+        "url": https_url(post["thumbs"].get("large") or post["thumbs"].get("small"), "wallhaven.cc"),
+        # Wallhaven has no mid-size rendition; the hero shows the original.
+        "preview": full,
+        "full": full,
+        "width": width,
+        "height": height,
+    }
+
+
+def search(source: str, words: list[str], page: int = 1) -> dict:
+    """List matching wallpapers without downloading or applying any of them."""
+    source = search_source(source)
+    if not 1 <= page <= 1000:
+        raise ActionError("Search page is out of range")
+    minimum = min_dimensions()
+    results = []
+    if source == "general":
+        # Relevance needs a query; an empty search shows the most popular.
+        data = fetch_json(wallhaven_query(words, minimum, sorting="relevance" if words else "toplist", page=page))
+        posts = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(posts, list):
+            raise ActionError("Wallhaven search returned invalid data")
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        last = meta.get("last_page")
+        more = isinstance(last, int) and page < last
+        convert = wallhaven_result
+    else:
+        site, rating = KONACHAN[source]
+        posts = fetch_json(konachan_query(site, rating, words, minimum,
+                                          order="score", limit=SEARCH_LIMIT, page=page))
+        if not isinstance(posts, list):
+            raise ActionError("Konachan search returned invalid data")
+        more = len(posts) >= SEARCH_LIMIT
+        convert = lambda post: konachan_result(post, source, site)  # noqa: E731
+    for post in posts:
+        try:
+            results.append(convert(post))
+        except ActionError:
+            # One unusable post must not hide the rest of the page.
+            continue
+    return {"source": source, "page": page, "more": more, "results": results}
+
+
+def download_result(source: str, identifier: str, url: str) -> Path:
+    source = search_source(source)
+    identifier = result_id(identifier)
+    url = https_url(url, SOURCE_HOST[source])
+    stem = f"{RESULT_PREFIX[source]}_{identifier}"
+    directory = backend.pictures_dir() / backend.FOLDERS[source]
+    for extension in ("png", "jpg"):
+        existing = directory / f"{stem}.{extension}"
+        if existing.is_file():
+            try:
+                validate_image(existing)
+                return existing
+            except ActionError:
+                existing.unlink(missing_ok=True)
+    return download_image(url, source, min_dimensions(), stem)
+
+
+def apply_result(source: str, identifier: str, url: str) -> dict:
+    path = download_result(source, identifier, url)
+    return {**apply(path), "source": source}
+
+
+def favorite_result(source: str, identifier: str, url: str) -> dict:
+    path = download_result(source, identifier, url)
+    return backend.favorite_selected(str(path))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Wallpick standalone wallpaper actions")
-    parser.add_argument("command", choices=["apply", "favorite-current", "randomanime", "randomwall", "randomgooner"])
+    parser.add_argument("command", choices=["apply", "favorite-current", "randomanime", "randomwall", "randomgooner",
+                                            "search", "apply-result", "favorite-result"])
     parser.add_argument("arguments", nargs="*")
     args = parser.parse_args(argv)
     try:
+        if args.command == "search":
+            # Read-only, so it neither takes nor waits for the action lock.
+            if len(args.arguments) < 2 or not args.arguments[1].isdigit():
+                raise ActionError("Search requires a source, a page number and optional tags")
+            print(json.dumps(search(args.arguments[0], args.arguments[2:], int(args.arguments[1])), ensure_ascii=False))
+            return 0
         with action_lock():
             if args.command == "apply":
                 if len(args.arguments) != 1:
@@ -414,6 +554,11 @@ def main(argv: list[str] | None = None) -> int:
                 if args.arguments:
                     raise ActionError("Favorite current takes no arguments")
                 result = favorite_current()
+            elif args.command in ("apply-result", "favorite-result"):
+                if len(args.arguments) != 3:
+                    raise ActionError("A search result needs a source, an ID and an image URL")
+                action = apply_result if args.command == "apply-result" else favorite_result
+                result = action(*args.arguments)
             else:
                 result = random_wallpaper(args.command, args.arguments)
         print(json.dumps(result, ensure_ascii=False))

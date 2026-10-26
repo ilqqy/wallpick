@@ -267,6 +267,132 @@ class ActionsTest(unittest.TestCase):
                 with actions.action_lock():
                     pass
 
+    def konachan_post(self, identifier, site="konachan.net", **overrides):
+        post = {
+            "id": identifier, "width": 1920, "height": 1080,
+            "preview_url": f"https://{site}/data/preview/{identifier}.jpg",
+            "sample_url": f"https://{site}/sample/{identifier}.jpg",
+            "file_url": f"https://{site}/image/{identifier}.png",
+        }
+        post.update(overrides)
+        return post
+
+    def test_konachan_search_lists_results_without_downloading(self):
+        observed = []
+        posts = [self.konachan_post(1), self.konachan_post(2, file_url="https://evil.example/a.png"),
+                 "not a post", self.konachan_post("../escape")]
+        posts += [self.konachan_post(10 + i) for i in range(actions.SEARCH_LIMIT - len(posts))]
+
+        def fake_json(url):
+            observed.append(url)
+            return [] if "/tag.json" in url else posts
+
+        with patch.object(actions, "fetch_json", side_effect=fake_json), \
+             patch.object(actions, "run_process") as process:
+            found = actions.search("anime", ["bleach"], page=2)
+        process.assert_not_called()
+        post_url = observed[-1]
+        self.assertIn("order:score+rating:safe", post_url)
+        self.assertIn(f"limit={actions.SEARCH_LIMIT}&page=2", post_url)
+        self.assertTrue(found["more"])
+        self.assertEqual(found["page"], 2)
+        first = found["results"][0]
+        self.assertEqual(first["key"], "anime:1")
+        self.assertEqual(first["stem"], "konachan_1")
+        self.assertEqual(first["url"], "https://konachan.net/data/preview/1.jpg")
+        self.assertEqual(first["preview"], "https://konachan.net/sample/1.jpg")
+        self.assertEqual(first["full"], "https://konachan.net/image/1.png")
+        ids = [result["id"] for result in found["results"]]
+        self.assertNotIn("2", ids)
+        self.assertNotIn("../escape", ids)
+        self.assertEqual(len(ids), actions.SEARCH_LIMIT - 3)
+
+    def test_questionable_search_keeps_its_filters_and_host(self):
+        with patch.object(actions, "fetch_json", side_effect=lambda url: [] if "/tag.json" in url
+                          else [self.konachan_post(5, site="konachan.com")]) as fetch:
+            found = actions.search("gooner", [])
+        self.assertIn("konachan.com/post.json", fetch.call_args.args[0])
+        self.assertIn("rating:questionable+-loli+-child", fetch.call_args.args[0])
+        self.assertFalse(found["more"])
+        self.assertEqual(found["results"][0]["source"], "gooner")
+
+    def test_wallhaven_search_uses_relevance_and_reports_more_pages(self):
+        post = {"id": "abc123", "file_type": "image/jpeg", "dimension_x": 3840, "dimension_y": 2160,
+                "path": "https://w.wallhaven.cc/full/ab/wallhaven-abc123.jpg",
+                "thumbs": {"large": "https://th.wallhaven.cc/lg/ab/abc123.jpg"}}
+        gif = dict(post, id="gif1", file_type="image/gif")
+        data = {"data": [post, gif], "meta": {"current_page": 1, "last_page": 3}}
+        with patch.object(actions, "fetch_json", return_value=data) as fetch:
+            found = actions.search("general", ["dark", "forest"])
+            self.assertIn("sorting=relevance", fetch.call_args.args[0])
+            self.assertTrue(found["more"])
+            self.assertEqual([result["id"] for result in found["results"]], ["abc123"])
+            self.assertEqual(found["results"][0]["url"], "https://th.wallhaven.cc/lg/ab/abc123.jpg")
+            self.assertEqual(found["results"][0]["stem"], "wallhaven_abc123")
+            found = actions.search("general", [], page=3)
+            self.assertIn("sorting=toplist", fetch.call_args.args[0])
+            self.assertIn("&page=3", fetch.call_args.args[0])
+            self.assertFalse(found["more"])
+
+    def test_search_rejects_unknown_source(self):
+        with self.assertRaisesRegex(actions.ActionError, "Unknown search source"):
+            actions.search("favorites", [])
+
+    def test_result_download_validates_source_host_and_id(self):
+        with patch.object(actions, "run_process") as process:
+            with self.assertRaises(actions.ActionError):
+                actions.download_result("anime", "1", "https://wallhaven.cc/full/a.png")
+            with self.assertRaises(actions.ActionError):
+                actions.download_result("anime", "../../x", "https://konachan.net/image/a.png")
+            process.assert_not_called()
+
+    def test_apply_result_downloads_under_stable_name_then_reuses_it(self):
+        source = self.image(self.root / "fixture.png")
+        downloads = []
+
+        def fake_process(argv, timeout):
+            if "--output" in argv:
+                downloads.append(argv[-1])
+                Path(argv[argv.index("--output") + 1]).write_bytes(source.read_bytes())
+            return self.completed(argv)
+
+        with patch.object(actions, "require_command", side_effect=lambda name: name), \
+             patch.object(actions, "ensure_daemon"), \
+             patch.object(actions, "run_process", side_effect=fake_process):
+            first = actions.apply_result("anime", "42", "https://konachan.net/image/a.png")
+            second = actions.apply_result("anime", "42", "https://konachan.net/image/a.png")
+        saved = self.root / "Pictures" / "random_konachan" / "konachan_42.png"
+        self.assertEqual(first["path"], str(saved))
+        self.assertEqual(second["path"], str(saved))
+        self.assertEqual(downloads, ["https://konachan.net/image/a.png"])
+        self.assertEqual(Path(first["current"]).read_bytes(), source.read_bytes())
+
+    def test_failed_result_download_keeps_desktop_and_folder_clean(self):
+        old = self.image(self.root / "Pictures" / ".current-wallpaper" / "wallpaper.png")
+        old_contents = old.read_bytes()
+        with patch.object(actions, "require_command", return_value="curl"), \
+             patch.object(actions, "run_process", side_effect=lambda argv, timeout: self.completed(argv, 22)):
+            with self.assertRaisesRegex(actions.ActionError, "download failed"):
+                actions.apply_result("general", "abc123", "https://w.wallhaven.cc/full/ab/a.jpg")
+        self.assertEqual(old.read_bytes(), old_contents)
+        self.assertEqual(list((self.root / "Pictures" / "random_wallhaven").iterdir()), [])
+
+    def test_favorite_result_saves_a_copy_in_favorites(self):
+        saved = self.image(self.root / "Pictures" / "random_konachan" / "konachan_7.png")
+        with patch.object(actions, "run_process") as process:
+            favorite = actions.favorite_result("anime", "7", "https://konachan.net/image/a.png")
+        process.assert_not_called()
+        self.assertEqual(Path(favorite["path"]).parent, self.root / "Pictures" / "favorite")
+        self.assertEqual(Path(favorite["path"]).read_bytes(), saved.read_bytes())
+
+    def test_cli_search_does_not_wait_for_the_action_lock(self):
+        output = io.StringIO()
+        with patch.object(actions, "search", return_value={"results": []}) as search, \
+             redirect_stdout(output), actions.action_lock():
+            status = actions.main(["search", "--", "anime", "2", "bleach", "-chibi"])
+        self.assertEqual(status, 0)
+        search.assert_called_once_with("anime", ["bleach", "-chibi"], 2)
+
     def test_cli_passes_negative_tags_as_data(self):
         output = io.StringIO()
         with patch.object(actions, "random_wallpaper", return_value={"path": "/tmp/example.png"}) as random_action, \

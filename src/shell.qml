@@ -107,5 +107,13 @@ ShellRoot {
         function randomSource(key: string): void { popup.randomFromSource(key) }
         function randomWall(): void { wallpapers.random("randomwall", []) }
         function randomGooner(): void { wallpapers.random("randomgooner", []) }
+        function search(source: string, query: string): void { root.open(); popup.searchFor(source, query) }
+        function closeResults(): void { popup.closeResults(false) }
+        function searchStatus(): string {
+            return JSON.stringify({ showing: popup.showingResults, searching: wallpapers.searching, error: wallpapers.searchError,
+                                    source: wallpapers.resultsSource, page: wallpapers.resultsPage, more: wallpapers.resultsMore,
+                                    count: wallpapers.results.length, selected: popup.selectedItem ? popup.selectedItem.key || popup.selectedItem.path : "",
+                                    remote: popup.selectedRemote, ready: popup.previewReady })
+        }
     }
 }

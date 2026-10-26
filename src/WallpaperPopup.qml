@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Wayland
 import Quickshell.Hyprland
@@ -9,23 +10,47 @@ PanelWindow {
     id: window
     property var service
     property string sourceKey: "recent"
-    property string selectedPath: gallery.selectedItem ? gallery.selectedItem.path : ""
-    property string selectedUrl: gallery.selectedItem ? gallery.selectedItem.url : ""
+    readonly property var selectedItem: gallery.selectedItem
+    // Search results that are not downloaded yet have no local path.
+    readonly property bool selectedRemote: !!selectedItem && !!selectedItem.remote
+    property string selectedPath: selectedItem && !selectedItem.remote ? selectedItem.path : ""
+    property string selectedUrl: selectedItem ? (selectedItem.preview || selectedItem.url) : ""
     property string displayUrl: ""
     property string displayedUrl: ""
     property string previewError: ""
     readonly property bool previewReady: heroImage.status === Image.Ready && displayUrl === selectedUrl && !!selectedUrl
     property string fetchMode: "randomanime"
+    readonly property string fetchSourceKey: sourceForCommand(fetchMode) || "anime"
     readonly property string fetchSourceName: commandLabel(fetchMode) || "Konachan"
+    // The gallery shows search results instead of a folder until a source
+    // card or "Back" is chosen.
+    property bool showingResults: false
+    property string sourceBeforeResults: "recent"
+    property string searchedText: ""
+    property bool focusResults: false
+    readonly property string resultsSourceName: sourceLabel(service.resultsSource)
+    readonly property string resultsSubject: service.resultsWords && service.resultsWords.length
+        ? "“" + service.resultsWords.join(" ") + "”" : "top wallpapers"
+    readonly property string resultsCaption: !showingResults || gallery.count === 0 ? ""
+        : resultsSubject + " · " + resultsSourceName + " · " + gallery.count + (service.resultsMore ? "+" : "")
+          + (gallery.count === 1 ? " result" : " results")
+          + (service.searching ? " · loading more…" : service.searchError ? " · could not load more" : "")
+    readonly property var galleryItems: showingResults ? resultItems(service.results, service.resultsSource)
+                                                       : sourceItems(sourceKey)
     readonly property string busyOperation: service && service.busy ? String(service.operation || "") : ""
     readonly property string busyLabel: busyOperation === "" ? ""
         : busyOperation === "Apply" ? "Applying wallpaper…"
+        : busyOperation === "ApplyResult" ? "Downloading and applying…"
         : busyOperation === "Favorite" ? "Saving to favorites…"
-        : commandLabel(busyOperation) ? "Fetching from " + commandLabel(busyOperation) + "…"
+        : busyOperation === "FavoriteResult" ? "Downloading to favorites…"
+        : commandLabel(busyOperation) ? "Fetching a random " + commandLabel(busyOperation) + " wallpaper…"
         : "Working…"
     readonly property string heroPlaceholder: previewError ? previewError
-        : !gallery.selectedItem ? (service.scanning ? "Loading your wallpapers…" : "Choose a collection or fetch a new wallpaper")
-        : heroImage.status === Image.Loading && !displayedUrl ? "Loading preview…"
+        : !gallery.selectedItem ? (showingResults
+            ? (service.searching ? "Searching " + resultsSourceName + "…"
+               : service.searchError || "No " + resultsSourceName + " results for " + resultsSubject + ". Try other tags.")
+            : service.scanning ? "Loading your wallpapers…" : "Choose a collection or search for a wallpaper")
+        : heroImage.status === Image.Loading && !displayedUrl && !(selectedRemote && heroThumb.status === Image.Ready) ? "Loading preview…"
         : ""
     // Logical screen size; the popup shrinks on short or scaled outputs so the
     // action row never ends up off-screen.
@@ -60,21 +85,72 @@ PanelWindow {
         const info = AppConfig.sourceInfo.find(source => source.command && source.command === command)
         return info ? info.label : ""
     }
+    function sourceLabel(key) {
+        const info = AppConfig.sourceInfo.find(source => source.key === key)
+        return info ? info.label : ""
+    }
+    function sourceForCommand(command) {
+        const info = AppConfig.sourceInfo.find(source => source.command && source.command === command)
+        return info ? info.key : ""
+    }
+    // Results that were downloaded before (by name) behave like local files:
+    // no second download, a full-quality preview, and the current marker.
+    function resultItems(results, source) {
+        const saved = {}
+        for (const item of sourceItems(source))
+            saved[item.name.replace(/\.[^.]*$/, "")] = item
+        return results.map(result => {
+            const local = saved[result.stem]
+            return local ? Object.assign({}, result, { remote: false, path: local.path, preview: local.url, applied: local.applied })
+                         : Object.assign({}, result, { remote: true, path: "", applied: false })
+        })
+    }
+    function leaveResults() {
+        if (!showingResults) return
+        showingResults = false
+        focusResults = false
+        service.clearSearch()
+    }
     // viaKeyboard decides whether the gallery shows its focus ring after the switch.
     function chooseSource(key, viaKeyboard) {
         if (!AppConfig.sourceInfo.some(info => info.key === key))
             return
+        leaveResults()
         sourceKey = key
-        if (key === "anime") fetchMode = "randomanime"
-        else if (key === "general") fetchMode = "randomwall"
-        else if (key === "gooner") fetchMode = "randomgooner"
+        const info = AppConfig.sourceInfo.find(source => source.key === key)
+        if (info.command) fetchMode = info.command
         gallery.pointerFocus = !viaKeyboard
         gallery.forceActiveFocus()
     }
+    function closeResults(viaKeyboard) { chooseSource(sourceBeforeResults, viaKeyboard) }
     function selectIndex(index) { gallery.goTo(index) }
     function words() {
         return query.text.trim() ? query.text.trim().split(/\s+/) : []
     }
+    // Lists matching wallpapers in the gallery; nothing is applied until the
+    // user picks one and presses Apply.
+    function search() {
+        const key = fetchSourceKey
+        if (!showingResults) sourceBeforeResults = sourceKey
+        if (!service.search(key, words())) return
+        searchedText = query.text.trim()
+        focusResults = true
+        showingResults = true
+        sourceKey = key
+        gallery.lastPath = ""
+    }
+    function searchFor(key, text) {
+        const info = AppConfig.sourceInfo.find(source => source.key === key)
+        if (!info || !info.command) return
+        fetchMode = info.command
+        query.text = text
+        search()
+    }
+    function loadMoreIfNeeded() {
+        if (showingResults && service.resultsMore && !service.searching && gallery.count - gallery.activeIndex <= 5)
+            service.searchMore()
+    }
+    // Random stays a separate, explicit action: it downloads and applies at once.
     function fetch(command) {
         if (!service.busy) {
             fetchMode = command
@@ -102,11 +178,18 @@ PanelWindow {
         })
     }
     function apply() {
-        if (selectedPath && !service.busy && previewReady)
+        if (service.busy) return
+        if (selectedRemote)
+            service.applyResult(selectedItem)
+        else if (selectedPath && previewReady)
             service.apply(selectedPath)
     }
     function favorite() {
         if (service.busy) return
+        if (selectedRemote) {
+            service.favoriteResult(selectedItem)
+            return
+        }
         if (selectedPath && !previewReady) return
         if (selectedPath && (!gallery.selectedItem.applied || service.currentUncertain))
             service.favoriteSelected(selectedPath)
@@ -129,11 +212,23 @@ PanelWindow {
         target: window.service
         function onActionFinished(operation, success) {
             if (!success) return
-            const key = operation === "randomanime" ? "anime" : operation === "randomwall" ? "general" : operation === "randomgooner" ? "gooner" : ""
+            const key = window.sourceForCommand(operation)
             if (key) {
+                // Reveal the random wallpaper in its folder, out of any search.
+                window.leaveResults()
                 window.sourceKey = key
                 gallery.lastPath = ""
                 window.fetchMode = operation
+            }
+        }
+        function onSearchFinished(success) {
+            if (!success || !window.focusResults) return
+            window.focusResults = false
+            // Enter → arrows → Enter: move on to the results unless the user
+            // has already started typing a different search.
+            if (gallery.count && (!query.activeFocus || query.text.trim() === window.searchedText)) {
+                gallery.pointerFocus = !query.activeFocus
+                gallery.forceActiveFocus()
             }
         }
         // Success feedback is transient; errors stay until the next action.
@@ -154,7 +249,27 @@ PanelWindow {
             Qt.callLater(() => keyScope.forceActiveFocus())
         }
     }
-    onSelectedUrlChanged: Qt.callLater(() => transitionTo(selectedUrl))
+    // Remote previews are megabytes, so they wait until browsing pauses; the
+    // cached card thumbnail stands in meanwhile.
+    onSelectedUrlChanged: {
+        if (selectedRemote) {
+            remotePreviewDelay.restart()
+        } else {
+            remotePreviewDelay.stop()
+            Qt.callLater(() => transitionTo(selectedUrl))
+        }
+    }
+
+    Timer {
+        id: remotePreviewDelay
+        interval: 160
+        onTriggered: window.transitionTo(window.selectedUrl)
+    }
+
+    Connections {
+        target: gallery
+        function onActiveIndexChanged() { window.loadMoreIfNeeded() }
+    }
 
     HyprlandFocusGrab {
         windows: [window]
@@ -266,7 +381,8 @@ PanelWindow {
                                 if (oldImage.opacity > 0) fadeOld.restart()
                             } else if (status === Image.Error) {
                                 oldImage.opacity = 0
-                                window.previewError = "This image could not be loaded"
+                                window.previewError = window.selectedRemote ? "The full preview could not be loaded"
+                                                                            : "This image could not be loaded"
                             }
                         }
                     }
@@ -281,6 +397,28 @@ PanelWindow {
                         visible: opacity > 0 && status === Image.Ready
                         NumberAnimation on opacity { id: fadeOld; from: 1; to: 0; duration: 260; easing.type: Easing.OutCubic; running: false }
                     }
+                    // A search result's card thumbnail, softened, holds the
+                    // frame until the full preview arrives. It is the same
+                    // request as the gallery card, so it comes from the cache.
+                    Image {
+                        id: heroThumb
+                        anchors.fill: parent
+                        source: window.selectedRemote ? window.selectedItem.url : ""
+                        sourceSize.width: 540
+                        sourceSize.height: 310
+                        asynchronous: true
+                        fillMode: Image.PreserveAspectCrop
+                        opacity: window.selectedRemote && !window.previewReady ? 1 : 0
+                        visible: opacity > 0 && status === Image.Ready
+                        layer.enabled: visible && GraphicsInfo.api !== GraphicsInfo.Software
+                        layer.effect: MultiEffect {
+                            autoPaddingEnabled: false
+                            blurEnabled: true
+                            blurMax: 32
+                            blur: 0.5
+                        }
+                        Behavior on opacity { NumberAnimation { duration: AppConfig.reducedMotion ? 0 : 260; easing.type: Easing.OutCubic } }
+                    }
                     Rectangle {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                         height: 54
@@ -288,6 +426,15 @@ PanelWindow {
                             GradientStop { position: 0; color: Theme.alpha(Theme.shade, 0) }
                             GradientStop { position: 1; color: Theme.shade }
                         }
+                    }
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.bottom: parent.bottom
+                        height: 2
+                        width: parent.width * heroImage.progress
+                        color: Theme.accent
+                        opacity: window.selectedRemote && heroImage.status === Image.Loading ? 0.8 : 0
+                        Behavior on opacity { NumberAnimation { duration: AppConfig.reducedMotion ? 0 : Theme.normal; easing.type: Easing.OutCubic } }
                     }
                 }
                 Text {
@@ -373,13 +520,46 @@ PanelWindow {
             DriftWallpaperSlider {
                 id: gallery
                 active: window.opened
-                loading: service.scanning
+                loading: window.showingResults ? service.searching : service.scanning
+                loadingText: window.showingResults ? "Searching " + window.resultsSourceName + "…" : "Loading wallpapers…"
+                emptyText: window.showingResults ? (service.searchError || "No results") : "No wallpapers in this collection"
                 anchors.bottom: bottom.top
                 anchors.bottomMargin: 8
                 anchors.left: parent.left
                 anchors.right: parent.right
                 height: Math.round(Math.max(170, Math.min(220, content.mediaHeight - content.heroFullHeight)))
-                items: window.sourceItems(window.sourceKey)
+                items: window.galleryItems
+            }
+
+            // Shares the gallery's bottom row with its centred arrow chips.
+            Item {
+                id: resultsBar
+                anchors.left: gallery.left
+                anchors.right: gallery.right
+                anchors.bottom: gallery.bottom
+                height: 28
+                visible: window.showingResults
+
+                Text {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 6
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width / 2 - 66
+                    elide: Text.ElideRight
+                    text: window.resultsCaption
+                    color: Theme.muted
+                    font.pixelSize: 12
+                }
+                QuietButton {
+                    id: backButton
+                    anchors.right: parent.right
+                    width: Math.min(implicitWidth, parent.width / 2 - 66)
+                    height: 28
+                    radius: 7
+                    text: "Back to " + window.sourceLabel(window.sourceBeforeResults)
+                    Accessible.description: "Leave the search results"
+                    onClicked: window.closeResults(!pointerFocus)
+                }
             }
 
             Item {
@@ -392,8 +572,9 @@ PanelWindow {
                 Rectangle {
                     id: searchBox
                     anchors.left: parent.left
+                    anchors.right: randomButton.left
+                    anchors.rightMargin: 9
                     anchors.top: parent.top
-                    width: parent.width
                     height: 43
                     radius: 11
                     color: Theme.field
@@ -411,7 +592,7 @@ PanelWindow {
                     }
                     TextInput {
                         id: query
-                        anchors { left: parent.left; right: fetchButton.left; top: parent.top; bottom: parent.bottom; leftMargin: 15; rightMargin: 12 }
+                        anchors { left: parent.left; right: searchButton.left; top: parent.top; bottom: parent.bottom; leftMargin: 15; rightMargin: 12 }
                         verticalAlignment: TextInput.AlignVCenter
                         color: Theme.foreground
                         selectionColor: Theme.accent
@@ -421,30 +602,46 @@ PanelWindow {
                         activeFocusOnTab: true
                         Accessible.role: Accessible.EditableText
                         Accessible.name: placeholder.text
-                        Accessible.description: "Press Enter to fetch a wallpaper"
-                        onAccepted: window.fetch(window.fetchMode)
+                        Accessible.description: "Press Enter to list matching wallpapers"
+                        onAccepted: window.search()
                     }
                     Text {
                         id: placeholder
                         anchors.fill: query
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
-                        text: window.fetchSourceName + (window.fetchMode === "randomwall" ? " query" : " tags")
+                        text: "Search " + window.fetchSourceName + (window.fetchMode === "randomwall" ? "" : " tags")
                         color: Theme.dim
                         font.pixelSize: 13
                         visible: !query.text && !query.preeditText
                     }
                     QuietButton {
-                        id: fetchButton
+                        id: searchButton
                         anchors.right: parent.right
                         anchors.rightMargin: 4
                         anchors.verticalCenter: parent.verticalCenter
-                        width: 128; height: 35; radius: 8
-                        text: window.busyOperation.startsWith("random") ? "Fetching…" : "Fetch " + window.fetchSourceName
-                        enabled: !service.busy
-                        Accessible.name: "Fetch using " + window.fetchSourceName
-                        onClicked: window.fetch(window.fetchMode)
+                        width: 136; height: 35; radius: 8
+                        text: window.showingResults && service.searching && !service.results.length ? "Searching…" : "Search " + window.fetchSourceName
+                        Accessible.name: "Search " + window.fetchSourceName
+                        Accessible.description: "List matching wallpapers without applying one"
+                        onClicked: window.search()
                     }
+                }
+
+                // Kept apart from search: it downloads and applies at once.
+                QuietButton {
+                    id: randomButton
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    width: 112
+                    height: 43
+                    radius: 11
+                    icon: Component { ShuffleIcon {} }
+                    text: window.busyOperation.startsWith("random") ? "Fetching…" : "Random"
+                    enabled: !service.busy
+                    Accessible.name: "Random " + window.fetchSourceName
+                    Accessible.description: "Download and apply a random " + window.fetchSourceName + " wallpaper matching the tags"
+                    onClicked: window.fetch(window.fetchMode)
                 }
 
                 QuietButton {
@@ -456,7 +653,8 @@ PanelWindow {
                     height: 43
                     radius: 12
                     text: "♡  Favorite"
-                    enabled: !service.busy && (window.selectedPath ? window.previewReady : (!!service.catalog.current && !service.currentUncertain))
+                    enabled: !service.busy && (window.selectedRemote || (window.selectedPath ? window.previewReady
+                                                                                            : (!!service.catalog.current && !service.currentUncertain)))
                     Accessible.name: "Favorite"
                     Accessible.description: "Save the selected wallpaper to favorites"
                     onClicked: window.favorite()
@@ -467,8 +665,8 @@ PanelWindow {
                     anchors.bottom: parent.bottom
                     width: 171
                     height: 43
-                    text: window.busyOperation === "Apply" ? "Applying…" : "Apply wallpaper"
-                    enabled: !!window.selectedPath && !service.busy && window.previewReady
+                    text: window.busyOperation === "Apply" || window.busyOperation === "ApplyResult" ? "Applying…" : "Apply wallpaper"
+                    enabled: !service.busy && (window.selectedRemote || (!!window.selectedPath && window.previewReady))
                     reducedMotion: AppConfig.reducedMotion
                     onClicked: window.apply()
                 }

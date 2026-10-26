@@ -37,7 +37,9 @@ The screenshot uses original sample wallpapers created for this project.
 
 Select a wallpaper in the gallery to update the large preview. **Apply wallpaper** sets it on your desktop. Selection alone never changes your wallpaper.
 
-Each source card has a circular shuffle control. In **Recent** and **Favorites**, it chooses a saved image for preview. In **Konachan**, **Wallhaven**, and **Gooner**, it downloads and applies a new image immediately. The tag field accepts queries such as `rezero emilia -chibi` or `dark forest`; press **Fetch** or Enter to use the last selected remote source. Gooner is a separate questionable-rating mode and stays out of Recent.
+To find something specific, choose **Konachan**, **Wallhaven**, or **Gooner**, type tags such as `bleach`, `rezero emilia -chibi`, or `dark forest`, and press **Search** or Enter. The gallery then shows matching wallpapers from that source (Konachan lists the best-rated first, Wallhaven the most relevant) and loads more as you near the end. Nothing is downloaded until you press **Apply wallpaper** or **Favorite** on the one you picked. It is saved in the source folder as `konachan_<id>` or `wallhaven_<id>`, so applying it again reuses the file. **Back to …** below the gallery, or any source card, leaves the results.
+
+**Random** sits beside the search field and stays separate from search. It downloads a random wallpaper matching the tags and applies it immediately. Each source card also has a circular shuffle control: in **Recent** and **Favorites** it picks a saved image to preview, and in the remote sources it works like Random. Gooner is a separate questionable-rating mode and stays out of Recent.
 
 The popup uses a dark translucent surface with compositor blur. On Hyprland, the launcher adds a Wallpick-only blur rule for the current session; it does not edit your Hyprland or NixOS configuration. Other layer-shell compositors show the readable translucent surface without that Hyprland-specific blur rule.
 
@@ -103,7 +105,7 @@ wallpick fetch general dark forest
 
 The `random-*` commands send requests to the running UI; `apply`, `favorite`, and `fetch` run the bundled backend directly. Remote Random actions apply immediately.
 
-In the popup: **Esc** closes, **Left/Right** and **Home/End** browse, **Enter** applies once the preview has loaded, **F** favorites, and **R** runs Random for the selected source. The carousel also supports dragging and the mouse wheel.
+In the popup: **Esc** closes, **Left/Right** and **Home/End** browse, **Enter** applies once the preview has loaded, **F** favorites, and **R** runs Random for the selected source. In the search field, Enter lists the results and moves focus to the gallery, so you can browse with the arrow keys and press Enter to apply. The carousel also supports dragging and the mouse wheel.
 
 For a future Waybar binding, use the installed `wallpick toggle` command. You can map other clicks to `wallpick random-anime` or `wallpick favorite`. The repository does not modify Waybar.
 

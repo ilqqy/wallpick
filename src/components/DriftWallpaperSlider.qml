@@ -13,6 +13,8 @@ FocusScope {
     property bool reducedMotion: AppConfig.reducedMotion
     property bool active: true
     property bool loading: false
+    property string loadingText: "Loading wallpapers…"
+    property string emptyText: "No wallpapers in this collection"
     property bool pointerFocus: false
     property real pointerVelocity: 0
     property real moved: 0
@@ -47,16 +49,18 @@ FocusScope {
     Accessible.name: "Wallpapers"
     Accessible.description: selectedItem
         ? selectedItem.name + (selectedItem.applied ? ", current wallpaper" : "") + ", " + (activeIndex + 1) + " of " + count
-        : loading ? "Loading wallpapers" : "No wallpapers in this collection"
+        : loading ? loadingText : emptyText
 
     function seeded(n) { const v = Math.sin(n * 12.9898) * 43758.5453; return v - Math.floor(v) }
     function clamp(v, min, max) { return Math.min(max, Math.max(min, v)) }
+    // Search results have no file yet, so they are identified by their key.
+    function keyOf(item) { return item ? (item.key || item.path) : "" }
     function goTo(index) {
         if (items.length === 0) return
         const next = clamp(index, 0, items.length - 1)
         activeIndex = next
         target = next
-        lastPath = items[next].path
+        lastPath = keyOf(items[next])
         if (reducedMotion) progress = next
         selected(items[next])
     }
@@ -66,19 +70,24 @@ FocusScope {
     }
     function reset() {
         let next = 0
+        let found = false
         if (lastPath) {
             // Derived bindings can still contain the previous collection's
             // length while onItemsChanged is being delivered.
             for (let i = 0; i < items.length; i++) {
-                if (items[i].path === lastPath) { next = i; break }
+                if (keyOf(items[i]) === lastPath) { next = i; found = true; break }
             }
+        }
+        // A refresh or an appended page keeps the selected card where it is,
+        // so the drift is not interrupted.
+        if (!found || next !== activeIndex) {
+            progress = next
+            springVelocity = 0
         }
         activeIndex = next
         target = next
-        progress = next
-        springVelocity = 0
         const item = items[next] || null
-        lastPath = item ? item.path : ""
+        lastPath = keyOf(item)
         selected(item)
     }
     // Topmost visible card under a stage point, or -1.
@@ -164,7 +173,10 @@ FocusScope {
 
         Text {
             anchors.centerIn: parent
-            text: root.count > 0 ? "" : root.loading ? "Loading wallpapers…" : "No wallpapers in this collection"
+            width: parent.width - 48
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
+            text: root.count > 0 ? "" : root.loading ? root.loadingText : root.emptyText
             color: Theme.muted
             font.pixelSize: 13
         }
