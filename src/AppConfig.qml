@@ -13,8 +13,9 @@ QtObject {
     readonly property var sourceInfo: [
         { key: "recent", label: "Recent", hint: "Latest arrivals", command: "" },
         { key: "favorites", label: "Favorites", hint: "Saved for later", command: "" },
-        { key: "anime", label: "Konachan", hint: "Anime · safe", command: "randomanime" },
-        { key: "general", label: "Wallhaven", hint: "General · safe", command: "randomwall" },
+        // Anime searches Konachan, yande.re and Danbooru; Random uses Konachan.
+        { key: "anime", label: "Anime", hint: "Konachan · yande.re · Danbooru · safe", command: "randomanime" },
+        { key: "general", label: "Non-anime", hint: "Wallhaven · safe", command: "randomwall" },
         { key: "gooner", label: "Gooner", hint: "Questionable", command: "randomgooner" }
     ]
 }

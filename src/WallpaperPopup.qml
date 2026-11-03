@@ -26,7 +26,7 @@ PanelWindow {
     readonly property bool previewReady: heroImage.status === Image.Ready && displayUrl === selectedUrl && !!selectedUrl
     property string fetchMode: "randomanime"
     readonly property string fetchSourceKey: sourceForCommand(fetchMode) || "anime"
-    readonly property string fetchSourceName: commandLabel(fetchMode) || "Konachan"
+    readonly property string fetchSourceName: commandLabel(fetchMode) || "Anime"
     // The gallery shows search results instead of a folder until a source
     // card or "Back" is chosen.
     property bool showingResults: false

@@ -37,7 +37,7 @@ The screenshot uses original sample wallpapers created for this project.
 
 Select a wallpaper in the gallery to update the large preview. **Apply wallpaper** sets it on your desktop. Selection alone never changes your wallpaper.
 
-To find something specific, choose **Konachan**, **Wallhaven**, or **Gooner**, type tags such as `bleach`, `rezero emilia -chibi`, or `dark forest`, and press **Search** or Enter. The gallery then shows matching wallpapers from that source (Konachan lists the best-rated first, Wallhaven the most relevant) and loads more as you near the end. A Konachan search also lists safe landscape wallpapers from **yande.re** and **Danbooru**, alternating between the three sites; each result's name says where it came from, and a site that is down only drops its own results. Words that together name one tag are searched as that tag, so `jujutsu kaisen` finds `jujutsu_kaisen` and `gojo satoru` finds `gojou_satoru`. Nothing is downloaded until you press **Apply wallpaper** or **Favorite** on the one you picked. It is saved in the source folder as `konachan_<id>`, `yandere_<id>`, `danbooru_<id>` or `wallhaven_<id>`, so applying it again reuses the file. **Back to …** below the gallery, or any source card, leaves the results.
+To find something specific, choose **Anime**, **Non-anime**, or **Gooner**, type tags such as `bleach`, `rezero emilia -chibi`, or `dark forest`, and press **Search** or Enter. The gallery then shows matching wallpapers from that source (Anime lists the best-rated first, Non-anime the most relevant) and loads more as you near the end. **Anime** searches Konachan plus safe landscape wallpapers from yande.re and Danbooru, alternating between the three sites; **Non-anime** searches Wallhaven. Random in Anime still uses Konachan alone. Each result's name says where it came from, and a site that is down only drops its own results. Words that together name one tag are searched as that tag, so `jujutsu kaisen` finds `jujutsu_kaisen` and `gojo satoru` finds `gojou_satoru`. Nothing is downloaded until you press **Apply wallpaper** or **Favorite** on the one you picked. It is saved in the source folder as `konachan_<id>`, `yandere_<id>`, `danbooru_<id>` or `wallhaven_<id>`, so applying it again reuses the file. **Back to …** below the gallery, or any source card, leaves the results.
 
 **Random** sits beside the search field and stays separate from search. It downloads a random wallpaper matching the tags and applies it immediately. Each source card also has a circular shuffle control: in **Recent** and **Favorites** it picks a saved image to preview, and in the remote sources it works like Random. Gooner is a separate questionable-rating mode and stays out of Recent.
 
@@ -48,8 +48,8 @@ The package starts `awww-daemon` on demand if one is not already running. It sto
 | Source | Default folder |
 | --- | --- |
 | Favorites | `~/Pictures/favorite` |
-| Konachan | `~/Pictures/random_konachan` |
-| Wallhaven | `~/Pictures/random_wallhaven` |
+| Anime | `~/Pictures/random_konachan` |
+| Non-anime | `~/Pictures/random_wallhaven` |
 | Gooner | `~/Pictures/random_gooner` |
 | Current wallpaper | `~/Pictures/.current-wallpaper` |
 
