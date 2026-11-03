@@ -6,10 +6,14 @@ network, image validation, and wallpaper changes cannot block the QML thread.
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import fcntl
+from functools import lru_cache
+from itertools import chain, zip_longest
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import shutil
@@ -30,11 +34,31 @@ MAX_IMAGE_PIXELS = 80_000_000
 IMAGE_EXTENSION = {"PNG": "png", "JPEG": "jpg"}
 MANAGED_MARKERS = ("wallpaper.png", "wallpaper.jpg", "wallpaper.jpeg")
 SEARCH_LIMIT = 24
-KONACHAN = {"anime": ("konachan.net", "safe"), "gooner": ("konachan.com", "questionable")}
-SOURCE_HOST = {"anime": "konachan.net", "general": "wallhaven.cc", "gooner": "konachan.com"}
-# Search results are saved under a stable name so a result that was already
-# downloaded is reused, and the UI can recognise it in the local catalog.
-RESULT_PREFIX = {"anime": "konachan", "general": "wallhaven", "gooner": "konachan"}
+DANBOORU = "danbooru.donmai.us"
+# Image boards a search can draw from. "files" is the host family that serves
+# their images; "prefix" names saved results, so a result that was already
+# downloaded is reused and the UI can recognise it in the local catalog.
+# "landscape" drops portrait art, which most boards other than Konachan are
+# full of and which makes a poor desktop wallpaper.
+BOORUS = {
+    "konachan.net": {"kind": "moebooru", "label": "Konachan", "prefix": "konachan", "files": "konachan.net"},
+    "konachan.com": {"kind": "moebooru", "label": "Konachan", "prefix": "konachan", "files": "konachan.com"},
+    "yande.re": {"kind": "moebooru", "label": "yande.re", "prefix": "yandere", "files": "yande.re",
+                 "landscape": True},
+    DANBOORU: {"kind": "danbooru", "label": "Danbooru", "prefix": "danbooru", "files": "donmai.us",
+               "landscape": True},
+}
+# The boards each searchable source lists, with that board's rating filter.
+SEARCH_BOORUS = {
+    "anime": (("konachan.net", "safe"), ("yande.re", "safe"), (DANBOORU, "g")),
+    "gooner": (("konachan.com", "questionable"),),
+}
+SEARCH_SOURCES = ("anime", "general", "gooner")
+LANDSCAPE_RATIO = 1.3
+# Consecutive words are tried as one tag first ("jujutsu kaisen"), up to this many.
+MAX_PHRASE_WORDS = 3
+# order:score uses one of the two tags an anonymous search may have.
+DANBOORU_FREE_TAGS = 1
 
 
 class ActionError(Exception):
@@ -308,41 +332,162 @@ def fetch_json(url: str) -> object:
         raise ActionError("Wallpaper service returned invalid data") from error
 
 
-def resolve_konachan_tag(site: str, word: str) -> str:
-    if any(symbol in word for symbol in ":*<>="):
-        return word
-    base = f"https://{site}/tag.json?limit=100&order=count&name="
-    for pattern in (word, "*" + "*".join(word) + "*"):
-        data = fetch_json(base + quote(pattern, safe=""))
-        if not isinstance(data, list):
-            raise ActionError("Konachan tag search returned invalid data")
-        matches = [entry for entry in data if isinstance(entry, dict)
-                   and isinstance(entry.get("name"), str) and isinstance(entry.get("count"), int)
-                   and entry["count"] > 0]
-        if matches:
-            best = max(matches, key=lambda entry: entry["count"] * (5 if entry["name"] == word else 1))
-            return best["name"]
-    return word
+@lru_cache(maxsize=None)
+def tag_lookup(site: str, pattern: str) -> tuple[tuple[str, int, bool], ...]:
+    """Tags on the board matching the pattern as (name, post count, is an
+    artist), most used first."""
+    danbooru = BOORUS[site]["kind"] == "danbooru"
+    if danbooru:
+        # Brackets are percent-encoded so curl does not treat them as a glob.
+        url = (f"https://{site}/tags.json?limit=100&only=name,post_count,category&search%5Border%5D=count"
+               f"&search%5Bname_or_alias_matches%5D={quote(pattern, safe='')}")
+    else:
+        url = f"https://{site}/tag.json?limit=100&order=count&name={quote(pattern, safe='')}"
+    data = fetch_json(url)
+    if not isinstance(data, list):
+        raise ActionError(f"{BOORUS[site]['label']} tag search returned invalid data")
+    count, kind = ("post_count", "category") if danbooru else ("count", "type")
+    return tuple((entry["name"], entry[count], entry.get(kind) == 1) for entry in data
+                 if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+                 and isinstance(entry.get(count), int) and entry[count] > 0)
 
 
-def konachan_query(site: str, rating: str, words: list[str], minimum: tuple[int, int],
-                   *, order: str = "random", limit: int = 1, page: int = 1) -> str:
-    encoded = []
+def contains_pattern(site: str, text: str) -> str:
+    # Moebooru matches a plain name anywhere in a tag; Danbooru needs wildcards.
+    return f"*{text}*" if BOORUS[site]["kind"] == "danbooru" else text
+
+
+def word_shape(words: list[str]) -> re.Pattern:
+    # Each word must begin one of the tag's consecutive parts, so "emilia" is
+    # not "remilia_scarlet" and "dark forest" is not "dark_elven_forest_ranger".
+    return re.compile(r"(?:^|_|\()" + "_".join(re.escape(word) + "[^_]*" for word in words))
+
+
+def best_tag(matches, exact: str, shape: re.Pattern | None) -> tuple[str, int] | None:
+    # Artist names are only taken when typed exactly: a search for "kaisen"
+    # means Jujutsu Kaisen, not the artist kaisen_chuui.
+    usable = [(name, count) for name, count, artist in matches
+              if name == exact or (not artist and (shape is None or shape.search(name)))]
+    if not usable:
+        return None
+    return max(usable, key=lambda match: match[1] * (5 if match[0] == exact else 1))
+
+
+def resolve_tag(site: str, word: str) -> tuple[str, int] | None:
+    """The board's tag for one typed word, or None when nothing fits."""
+    found = best_tag(tag_lookup(site, contains_pattern(site, word)), word, word_shape([word]))
+    if not found and BOORUS[site]["kind"] == "moebooru":
+        # A letter-by-letter wildcard forgives typos ("rezero"). On Danbooru it
+        # matches almost any popular tag, so Danbooru borrows Konachan's
+        # answer instead.
+        found = best_tag(tag_lookup(site, "*" + "*".join(word) + "*"), word, None)
+    return found
+
+
+def resolve_phrase(site: str, words: list[str]) -> tuple[str, int] | None:
+    """One tag spelled by consecutive words, such as "jujutsu kaisen" or "gojo satoru"."""
+    joined = "_".join(words)
+    shape = word_shape(words)
+    for pattern in (contains_pattern(site, joined), "*" + "*".join(words) + "*"):
+        found = best_tag(tag_lookup(site, pattern), joined, shape)
+        if found:
+            return found
+    return None
+
+
+def plain_word(word: str) -> bool:
+    return not any(symbol in word for symbol in ":*<>=")
+
+
+def resolve_counted(site: str, words: list[str]) -> list[tuple[str, int | None]]:
+    """Typed words as the board's tags with their post counts (None if
+    unknown); negative tags keep their "-"."""
+    items = []
     for raw in words:
         normalized = raw.replace(" ", "_")
         negative = normalized.startswith("-")
         word = normalized[1:] if negative else normalized
         if not word:
             raise ActionError("A negative tag needs a name")
-        resolved = resolve_konachan_tag(site, word)
-        encoded.append(("-" if negative else "") + quote(resolved, safe=""))
+        items.append((negative, word))
+    # Danbooru has no forgiving fallback of its own; Konachan shares most of
+    # its tag names and Danbooru resolves the remaining ones as aliases.
+    fallback = "konachan.net" if BOORUS[site]["kind"] == "danbooru" else None
+    tags = []
+    index = 0
+    while index < len(items):
+        negative, word = items[index]
+        # Typing a multi-word tag is far more common than meaning each word
+        # separately, so the longest phrase that names a real tag wins.
+        end = index
+        while (end < len(items) and end - index < MAX_PHRASE_WORDS
+               and not items[end][0] and plain_word(items[end][1])):
+            end += 1
+        while end - index >= 2:
+            parts = [word for _, word in items[index:end]]
+            found = resolve_phrase(site, parts) or (fallback and resolve_phrase(fallback, parts))
+            if found:
+                tags.append(found)
+                break
+            end -= 1
+        if end - index >= 2:
+            index = end
+            continue
+        found = None
+        if plain_word(word):
+            found = resolve_tag(site, word) or (fallback and resolve_tag(fallback, word))
+        name, count = found or (word, None)
+        tags.append((("-" if negative else "") + name, count))
+        index += 1
+    unique = {}
+    for name, count in tags:
+        unique.setdefault(name, count)
+    return list(unique.items())
+
+
+def resolve_tags(site: str, words: list[str]) -> list[str]:
+    """Map typed words to the board's tag names; negative tags keep their "-"."""
+    return [name for name, _ in resolve_counted(site, words)]
+
+
+def konachan_query(site: str, rating: str, words: list[str], minimum: tuple[int, int],
+                   *, order: str = "random", limit: int = 1, page: int = 1) -> str:
+    """A Moebooru post search (Konachan, yande.re)."""
     tags = f"order:{order}+rating:" + rating
     if rating == "questionable":
         tags += "+-loli+-child"
-    for tag in encoded:
-        tags += "+" + tag
+    for tag in resolve_tags(site, words):
+        tags += "+" + quote(tag, safe="")
     tags += f"+width%3A%3E%3D{minimum[0]}+height%3A%3E%3D{minimum[1]}"
     return f"https://{site}/post.json?tags={tags}&limit={limit}" + (f"&page={page}" if page > 1 else "")
+
+
+DANBOORU_FIELDS = "id,image_width,image_height,file_ext,file_url,large_file_url,preview_file_url,tag_string,media_asset"
+
+
+def danbooru_query(rating: str, words: list[str], minimum: tuple[int, int],
+                   *, limit: int, page: int = 1) -> tuple[str, list[str]]:
+    """The post search URL and the tags left for the caller to filter by.
+
+    Anonymous Danbooru searches allow two tags besides rating and size
+    metatags, and order:score takes one of them. The rarest tag is sent so the
+    best-rated page is as relevant as possible; each post's tag list is
+    checked for the rest.
+    """
+    resolved = resolve_counted(DANBOORU, words)
+    positive = sorted((tag for tag in resolved if not tag[0].startswith("-")),
+                      key=lambda tag: float("inf") if tag[1] is None else tag[1])
+    negative = [tag for tag in resolved if tag[0].startswith("-")]
+    sent = [name for name, _ in (positive + negative)[:DANBOORU_FREE_TAGS]]
+    rest = [name for name, _ in resolved if name not in sent]
+    # Sorting the whole board by score times out without a tag to narrow it;
+    # "rank" lists recent popular posts instead.
+    order = "order:score" if positive else "order:rank"
+    tags = [order, f"rating:{rating}", f"width:>={minimum[0]}", f"height:>={minimum[1]}",
+            f"ratio:>={LANDSCAPE_RATIO}"] + sent
+    url = (f"https://{DANBOORU}/posts.json?tags={'+'.join(quote(tag, safe='') for tag in tags)}"
+           f"&limit={limit}&only={DANBOORU_FIELDS}" + (f"&page={page}" if page > 1 else ""))
+    return url, rest
 
 
 def wallhaven_query(words: list[str], minimum: tuple[int, int],
@@ -410,7 +555,7 @@ def random_wallpaper(command: str, words: list[str]) -> dict:
 
 
 def search_source(raw: str) -> str:
-    if raw not in SOURCE_HOST:
+    if raw not in SEARCH_SOURCES:
         raise ActionError(f"Unknown search source: {raw}")
     return raw
 
@@ -423,27 +568,93 @@ def result_id(raw: object) -> str:
     return value
 
 
-def konachan_result(post: object, source: str, site: str) -> dict:
-    if not isinstance(post, dict):
-        raise ActionError("Konachan returned an invalid post")
-    identifier = result_id(post.get("id"))
-    full = https_url(post.get("file_url"), site)
-    width, height = post.get("width"), post.get("height")
-    if not isinstance(width, int) or not isinstance(height, int):
-        raise ActionError("Konachan post has no dimensions")
+def booru_result(site: str, source: str, raw_id: object, *, thumb: object, preview: object,
+                 full: object, width: object, height: object, extension: object = None) -> dict:
+    board = BOORUS[site]
+    identifier = result_id(raw_id)
+    if extension is not None and str(extension).lower() not in ("jpg", "jpeg", "png"):
+        raise ActionError("Only PNG and JPEG wallpapers are supported")
+    if not isinstance(width, int) or not isinstance(height, int) or height <= 0:
+        raise ActionError(f"{board['label']} post has no dimensions")
+    if board.get("landscape") and width < height * LANDSCAPE_RATIO:
+        raise ActionError(f"{board['label']} post is not a landscape image")
+    files = board["files"]
+    stem = f"{board['prefix']}_{identifier}"
     return {
         "id": identifier,
-        "key": f"{source}:{identifier}",
-        "stem": f"{RESULT_PREFIX[source]}_{identifier}",
+        "key": f"{source}:{stem}",
+        "stem": stem,
         "source": source,
-        "name": f"Konachan #{identifier}",
-        # The 300 px preview suits gallery cards; the 1500 px sample the hero.
-        "url": https_url(post.get("preview_url"), site),
-        "preview": https_url(post.get("sample_url") or post.get("file_url"), site),
-        "full": full,
+        "name": f"{board['label']} #{identifier}",
+        "url": https_url(thumb, files),
+        "preview": https_url(preview or full, files),
+        "full": https_url(full, files),
         "width": width,
         "height": height,
     }
+
+
+def konachan_result(post: object, source: str, site: str) -> dict:
+    """A Moebooru post (Konachan, yande.re)."""
+    if not isinstance(post, dict):
+        raise ActionError(f"{BOORUS[site]['label']} returned an invalid post")
+    # The 300 px preview suits gallery cards; the 1500 px sample the hero.
+    return booru_result(site, source, post.get("id"), thumb=post.get("preview_url"),
+                        preview=post.get("sample_url"), full=post.get("file_url"),
+                        width=post.get("width"), height=post.get("height"), extension=post.get("file_ext"))
+
+
+def danbooru_result(post: object, source: str) -> dict:
+    if not isinstance(post, dict):
+        raise ActionError("Danbooru returned an invalid post")
+    # The 360 px JPEG variant is the closest match to the other boards' card
+    # previews; 720 px is WebP, which Qt may not decode.
+    thumb = post.get("preview_file_url")
+    asset = post.get("media_asset")
+    variants = asset.get("variants") if isinstance(asset, dict) else None
+    for variant in variants if isinstance(variants, list) else []:
+        if (isinstance(variant, dict) and variant.get("type") == "360x360"
+                and variant.get("file_ext") in ("jpg", "png")):
+            thumb = variant.get("url")
+    return booru_result(DANBOORU, source, post.get("id"), thumb=thumb, preview=post.get("large_file_url"),
+                        full=post.get("file_url"), width=post.get("image_width"),
+                        height=post.get("image_height"), extension=post.get("file_ext"))
+
+
+def has_tags(post: object, tags: list[str]) -> bool:
+    present = set(post.get("tag_string", "").split()) if isinstance(post, dict) else set()
+    return all((tag[1:] not in present) if tag.startswith("-") else (tag in present) for tag in tags)
+
+
+def convert_posts(posts: list, convert) -> list[dict]:
+    results = []
+    for post in posts:
+        try:
+            results.append(convert(post))
+        except ActionError:
+            # One unusable post must not hide the rest of the page.
+            continue
+    return results
+
+
+def booru_page(site: str, rating: str, source: str, words: list[str],
+               minimum: tuple[int, int], page: int) -> tuple[list[dict], bool]:
+    label = BOORUS[site]["label"]
+    try:
+        if BOORUS[site]["kind"] == "danbooru":
+            url, rest = danbooru_query(rating, words, minimum, limit=SEARCH_LIMIT, page=page)
+            convert = lambda post: danbooru_result(post, source)  # noqa: E731
+        else:
+            url, rest = konachan_query(site, rating, words, minimum, order="score",
+                                       limit=SEARCH_LIMIT, page=page), []
+            convert = lambda post: konachan_result(post, source, site)  # noqa: E731
+        posts = fetch_json(url)
+    except ActionError as error:
+        raise ActionError(f"{label}: {error}") from error
+    if not isinstance(posts, list):
+        raise ActionError(f"{label} search returned invalid data")
+    more = len(posts) >= SEARCH_LIMIT
+    return convert_posts([post for post in posts if has_tags(post, rest)], convert), more
 
 
 def wallhaven_result(post: object) -> dict:
@@ -459,7 +670,7 @@ def wallhaven_result(post: object) -> dict:
     return {
         "id": identifier,
         "key": f"general:{identifier}",
-        "stem": f"{RESULT_PREFIX['general']}_{identifier}",
+        "stem": f"wallhaven_{identifier}",
         "source": "general",
         "name": f"Wallhaven {identifier}",
         "url": https_url(post["thumbs"].get("large") or post["thumbs"].get("small"), "wallhaven.cc"),
@@ -477,7 +688,6 @@ def search(source: str, words: list[str], page: int = 1) -> dict:
     if not 1 <= page <= 1000:
         raise ActionError("Search page is out of range")
     minimum = min_dimensions()
-    results = []
     if source == "general":
         # Relevance needs a query; an empty search shows the most popular.
         data = fetch_json(wallhaven_query(words, minimum, sorting="relevance" if words else "toplist", page=page))
@@ -487,29 +697,48 @@ def search(source: str, words: list[str], page: int = 1) -> dict:
         meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
         last = meta.get("last_page")
         more = isinstance(last, int) and page < last
-        convert = wallhaven_result
-    else:
-        site, rating = KONACHAN[source]
-        posts = fetch_json(konachan_query(site, rating, words, minimum,
-                                          order="score", limit=SEARCH_LIMIT, page=page))
-        if not isinstance(posts, list):
-            raise ActionError("Konachan search returned invalid data")
-        more = len(posts) >= SEARCH_LIMIT
-        convert = lambda post: konachan_result(post, source, site)  # noqa: E731
-    for post in posts:
+        return {"source": source, "page": page, "more": more, "results": convert_posts(posts, wallhaven_result)}
+    boards = SEARCH_BOORUS[source]
+    # The boards are queried side by side; one that is down or rejects the
+    # query only loses its own share of the results.
+    with ThreadPoolExecutor(max_workers=len(boards)) as pool:
+        futures = [pool.submit(booru_page, site, rating, source, words, minimum, page) for site, rating in boards]
+    pages, errors = [], []
+    for future in futures:
         try:
-            results.append(convert(post))
-        except ActionError:
-            # One unusable post must not hide the rest of the page.
-            continue
-    return {"source": source, "page": page, "more": more, "results": results}
+            pages.append(future.result())
+        except ActionError as error:
+            errors.append(error)
+            print(f"wallpick: {error}", file=sys.stderr)
+    if not pages:
+        raise errors[0]
+    # Alternate between boards so each one's best-rated posts lead the list.
+    mixed = [result for result in chain.from_iterable(zip_longest(*(results for results, _ in pages)))
+             if result is not None]
+    return {"source": source, "page": page, "more": any(more for _, more in pages), "results": mixed}
+
+
+def result_board(source: str, url: str) -> tuple[str, str]:
+    """The saved-name prefix and image host family for a result's image URL."""
+    if source == "general":
+        return "wallhaven", "wallhaven.cc"
+    try:
+        host = (urlsplit(url).hostname or "").lower() if isinstance(url, str) else ""
+    except ValueError:
+        host = ""
+    for site, _ in SEARCH_BOORUS[source]:
+        files = BOORUS[site]["files"]
+        if host == files or host.endswith("." + files):
+            return BOORUS[site]["prefix"], files
+    raise ActionError("Remote image URL uses an unexpected host")
 
 
 def download_result(source: str, identifier: str, url: str) -> Path:
     source = search_source(source)
     identifier = result_id(identifier)
-    url = https_url(url, SOURCE_HOST[source])
-    stem = f"{RESULT_PREFIX[source]}_{identifier}"
+    prefix, files = result_board(source, url)
+    url = https_url(url, files)
+    stem = f"{prefix}_{identifier}"
     directory = backend.pictures_dir() / backend.FOLDERS[source]
     for extension in ("png", "jpg"):
         existing = directory / f"{stem}.{extension}"

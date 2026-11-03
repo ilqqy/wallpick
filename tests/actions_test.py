@@ -1,6 +1,6 @@
 """Isolated action tests: no live network, wallpaper daemon, or desktop writes."""
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -31,6 +31,8 @@ class ActionsTest(unittest.TestCase):
         })
         env.start()
         self.addCleanup(env.stop)
+        actions.tag_lookup.cache_clear()
+        self.addCleanup(actions.tag_lookup.cache_clear)
 
     def image(self, path: Path, size=(150, 120), image_format="PNG") -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -285,20 +287,23 @@ class ActionsTest(unittest.TestCase):
 
         def fake_json(url):
             observed.append(url)
-            return [] if "/tag.json" in url else posts
+            if "tag" in url.split("?")[0]:
+                return []
+            return posts if "konachan.net/post.json" in url else []
 
         with patch.object(actions, "fetch_json", side_effect=fake_json), \
              patch.object(actions, "run_process") as process:
             found = actions.search("anime", ["bleach"], page=2)
         process.assert_not_called()
-        post_url = observed[-1]
+        post_url = next(url for url in observed if "konachan.net/post.json" in url)
         self.assertIn("order:score+rating:safe", post_url)
         self.assertIn(f"limit={actions.SEARCH_LIMIT}&page=2", post_url)
         self.assertTrue(found["more"])
         self.assertEqual(found["page"], 2)
         first = found["results"][0]
-        self.assertEqual(first["key"], "anime:1")
+        self.assertEqual(first["key"], "anime:konachan_1")
         self.assertEqual(first["stem"], "konachan_1")
+        self.assertEqual(first["name"], "Konachan #1")
         self.assertEqual(first["url"], "https://konachan.net/data/preview/1.jpg")
         self.assertEqual(first["preview"], "https://konachan.net/sample/1.jpg")
         self.assertEqual(first["full"], "https://konachan.net/image/1.png")
@@ -306,6 +311,120 @@ class ActionsTest(unittest.TestCase):
         self.assertNotIn("2", ids)
         self.assertNotIn("../escape", ids)
         self.assertEqual(len(ids), actions.SEARCH_LIMIT - 3)
+
+    def danbooru_post(self, identifier, width=3840, height=2160, tags="jujutsu_kaisen", **overrides):
+        digest = f"{identifier:032x}"
+        post = {
+            "id": identifier, "image_width": width, "image_height": height, "file_ext": "png",
+            "file_url": f"https://cdn.donmai.us/original/{digest}.png",
+            "large_file_url": f"https://cdn.donmai.us/sample/sample-{digest}.jpg",
+            "preview_file_url": f"https://cdn.donmai.us/180x180/{digest}.jpg",
+            "tag_string": tags,
+            "media_asset": {"variants": [
+                {"type": "180x180", "url": f"https://cdn.donmai.us/180x180/{digest}.jpg", "file_ext": "jpg"},
+                {"type": "360x360", "url": f"https://cdn.donmai.us/360x360/{digest}.jpg", "file_ext": "jpg"},
+                {"type": "720x720", "url": f"https://cdn.donmai.us/720x720/{digest}.webp", "file_ext": "webp"},
+            ]},
+        }
+        post.update(overrides)
+        return post
+
+    def test_anime_search_mixes_boards_and_survives_one_failing(self):
+        observed = []
+        yandere = [self.konachan_post(5, site="files.yande.re", preview_url="https://assets.yande.re/p/5.jpg",
+                                      width=3000, height=1500),
+                   self.konachan_post(6, site="files.yande.re", width=1500, height=3000)]
+        danbooru = [self.danbooru_post(7), self.danbooru_post(8, file_ext="gif"),
+                    self.danbooru_post(9, file_url="https://evil.example/a.png")]
+
+        def fake_json(url):
+            observed.append(url)
+            if "tag" in url.split("?")[0]:
+                return []
+            if "konachan.net" in url:
+                raise actions.ActionError("Wallpaper search failed; check the network or query")
+            return yandere if "yande.re" in url else danbooru
+
+        with patch.object(actions, "fetch_json", side_effect=fake_json), redirect_stderr(io.StringIO()) as errors:
+            found = actions.search("anime", ["bleach"])
+        self.assertIn("Konachan:", errors.getvalue())
+        self.assertEqual([result["key"] for result in found["results"]], ["anime:yandere_5", "anime:danbooru_7"])
+        self.assertFalse(found["more"])
+        yande, dan = found["results"]
+        self.assertEqual((yande["name"], yande["url"]), ("yande.re #5", "https://assets.yande.re/p/5.jpg"))
+        self.assertEqual(dan["name"], "Danbooru #7")
+        self.assertIn("/360x360/", dan["url"])
+        self.assertIn("/sample/", dan["preview"])
+        self.assertIn("/original/", dan["full"])
+        danbooru_url = next(url for url in observed if "danbooru.donmai.us/posts.json" in url)
+        for part in ("order%3Ascore", "rating%3Ag", "ratio%3A%3E%3D1.3", "bleach"):
+            self.assertIn(part, danbooru_url)
+
+    def test_search_fails_only_when_every_board_fails(self):
+        def fake_json(url):
+            raise actions.ActionError("Wallpaper search failed; check the network or query")
+
+        with patch.object(actions, "fetch_json", side_effect=fake_json), redirect_stderr(io.StringIO()):
+            with self.assertRaises(actions.ActionError):
+                actions.search("anime", ["bleach"])
+
+    def test_multi_word_query_is_one_tag_not_two(self):
+        # Konachan's real answers: "kaisen" alone would favour the artist kaisen_chuui.
+        tags = {
+            "jujutsu_kaisen": [{"name": "jujutsu_kaisen", "count": 15, "type": 3}],
+            "kaisen": [{"name": "kaisen_chuui", "count": 21, "type": 1},
+                       {"name": "jujutsu_kaisen", "count": 15, "type": 3}],
+        }
+        calls = []
+
+        def fake_json(url):
+            calls.append(url)
+            return tags.get(url.rsplit("name=", 1)[1], [])
+
+        with patch.object(actions, "fetch_json", side_effect=fake_json):
+            self.assertEqual(actions.resolve_tags("konachan.net", ["jujutsu", "kaisen"]), ["jujutsu_kaisen"])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(actions.resolve_tags("konachan.net", ["kaisen"]), ["jujutsu_kaisen"])
+
+    def test_words_must_start_tag_parts(self):
+        tags = {
+            "emilia": [{"name": "remilia_scarlet", "count": 2081, "type": 4},
+                       {"name": "emilia_(re:zero)", "count": 294, "type": 4}],
+            "dark_forest": [], "%2Adark%2Aforest%2A": [{"name": "dark_elven_forest_ranger", "count": 10, "type": 4}],
+            "dark": [{"name": "dark", "count": 900, "type": 0}],
+            "forest": [{"name": "forest", "count": 5000, "type": 0}],
+            "gojo_satoru": [], "%2Agojo%2Asatoru%2A": [{"name": "gojou_satoru", "count": 40, "type": 4}],
+        }
+        with patch.object(actions, "fetch_json", side_effect=lambda url: tags.get(url.rsplit("name=", 1)[1], [])):
+            self.assertEqual(actions.resolve_tags("konachan.net", ["emilia", "-chibi"]), ["emilia_(re:zero)", "-chibi"])
+            self.assertEqual(actions.resolve_tags("konachan.net", ["dark", "forest"]), ["dark", "forest"])
+            self.assertEqual(actions.resolve_tags("konachan.net", ["gojo", "satoru"]), ["gojou_satoru"])
+
+    def test_danbooru_sends_rarest_tag_and_filters_the_rest(self):
+        def fake_json(url):
+            if "tags.json" in url:
+                if "jujutsu" in url:
+                    return [{"name": "jujutsu_kaisen", "post_count": 25000, "category": 3}]
+                if "gojo" in url:
+                    return [{"name": "gojo_satoru", "post_count": 6000, "category": 4}]
+                return [{"name": "chibi", "post_count": 390000, "category": 0}]
+            if "posts.json" in url:
+                return [self.danbooru_post(1, tags="jujutsu_kaisen gojo_satoru"),
+                        self.danbooru_post(2, tags="jujutsu_kaisen gojo_satoru chibi"),
+                        self.danbooru_post(3, tags="gojo_satoru")]
+            return []
+
+        with patch.object(actions, "fetch_json", side_effect=fake_json):
+            url, rest = actions.danbooru_query("g", ["jujutsu_kaisen", "gojo_satoru", "-chibi"], (1920, 1080), limit=24)
+            self.assertIn("+gojo_satoru&", url)
+            self.assertNotIn("jujutsu", url)
+            self.assertEqual(rest, ["jujutsu_kaisen", "-chibi"])
+            results, _ = actions.booru_page(actions.DANBOORU, "g", "anime", ["jujutsu_kaisen", "gojo_satoru", "-chibi"],
+                                            (1920, 1080), 1)
+        self.assertEqual([result["id"] for result in results], ["1"])
+        with patch.object(actions, "fetch_json", return_value=[]):
+            url, _ = actions.danbooru_query("g", [], (1920, 1080), limit=24)
+        self.assertIn("order%3Arank", url)
 
     def test_questionable_search_keeps_its_filters_and_host(self):
         with patch.object(actions, "fetch_json", side_effect=lambda url: [] if "/tag.json" in url
@@ -315,6 +434,7 @@ class ActionsTest(unittest.TestCase):
         self.assertIn("rating:questionable+-loli+-child", fetch.call_args.args[0])
         self.assertFalse(found["more"])
         self.assertEqual(found["results"][0]["source"], "gooner")
+        self.assertEqual(found["results"][0]["stem"], "konachan_5")
 
     def test_wallhaven_search_uses_relevance_and_reports_more_pages(self):
         post = {"id": "abc123", "file_type": "image/jpeg", "dimension_x": 3840, "dimension_y": 2160,
@@ -343,6 +463,8 @@ class ActionsTest(unittest.TestCase):
             with self.assertRaises(actions.ActionError):
                 actions.download_result("anime", "1", "https://wallhaven.cc/full/a.png")
             with self.assertRaises(actions.ActionError):
+                actions.download_result("gooner", "1", "https://cdn.donmai.us/original/a.png")
+            with self.assertRaises(actions.ActionError):
                 actions.download_result("anime", "../../x", "https://konachan.net/image/a.png")
             process.assert_not_called()
 
@@ -366,6 +488,20 @@ class ActionsTest(unittest.TestCase):
         self.assertEqual(second["path"], str(saved))
         self.assertEqual(downloads, ["https://konachan.net/image/a.png"])
         self.assertEqual(Path(first["current"]).read_bytes(), source.read_bytes())
+
+    def test_each_board_saves_under_its_own_name(self):
+        source = self.image(self.root / "fixture.png")
+
+        def fake_process(argv, timeout):
+            if "--output" in argv:
+                Path(argv[argv.index("--output") + 1]).write_bytes(source.read_bytes())
+            return self.completed(argv)
+
+        with patch.object(actions, "require_command", side_effect=lambda name: name), \
+             patch.object(actions, "run_process", side_effect=fake_process):
+            yandere = actions.download_result("anime", "42", "https://files.yande.re/image/abc/a.png")
+            danbooru = actions.download_result("anime", "42", "https://cdn.donmai.us/original/ab/a.png")
+        self.assertEqual((yandere.name, danbooru.name), ("yandere_42.png", "danbooru_42.png"))
 
     def test_failed_result_download_keeps_desktop_and_folder_clean(self):
         old = self.image(self.root / "Pictures" / ".current-wallpaper" / "wallpaper.png")
