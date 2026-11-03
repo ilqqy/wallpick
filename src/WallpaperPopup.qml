@@ -14,7 +14,12 @@ PanelWindow {
     // Search results that are not downloaded yet have no local path.
     readonly property bool selectedRemote: !!selectedItem && !!selectedItem.remote
     property string selectedPath: selectedItem && !selectedItem.remote ? selectedItem.path : ""
-    property string selectedUrl: selectedItem ? (selectedItem.preview || selectedItem.url) : ""
+    // Some boards' previews only load through the backend's local cache; until
+    // it has one, the blurred card thumbnail stands in.
+    readonly property bool selectedNeedsFetch: selectedRemote && !!selectedItem.previewFetch
+    property string selectedUrl: !selectedItem ? ""
+        : selectedNeedsFetch ? (service.previewCache[selectedItem.key] || "")
+        : (selectedItem.preview || selectedItem.url)
     property string displayUrl: ""
     property string displayedUrl: ""
     property string previewError: ""
@@ -221,6 +226,10 @@ PanelWindow {
                 window.fetchMode = operation
             }
         }
+        function onPreviewFailed(key) {
+            if (window.selectedNeedsFetch && window.selectedItem.key === key)
+                window.previewError = "The full preview could not be loaded"
+        }
         function onSearchFinished(success) {
             if (!success || !window.focusResults) return
             window.focusResults = false
@@ -260,10 +269,25 @@ PanelWindow {
         }
     }
 
+    // Two fetched results in a row both start with an empty URL, so the
+    // selection itself has to restart the wait.
+    onSelectedItemChanged: {
+        if (selectedNeedsFetch) {
+            previewError = ""
+            remotePreviewDelay.restart()
+        }
+    }
+
     Timer {
         id: remotePreviewDelay
         interval: 160
-        onTriggered: window.transitionTo(window.selectedUrl)
+        onTriggered: {
+            // The previous image must not linger under a result whose preview
+            // is still on its way; transitionTo("") leaves the blurred thumbnail.
+            window.transitionTo(window.selectedUrl)
+            if (window.selectedNeedsFetch && !window.selectedUrl)
+                window.service.fetchPreview(window.selectedItem)
+        }
     }
 
     Connections {

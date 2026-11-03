@@ -6,8 +6,14 @@ import "components"
 
 ShellRoot {
     DriftWallpaperSlider { id: slider; active: false }
-    WallpaperService { id: service }
+    id: shell
+    WallpaperService { id: service; onPreviewFailed: key => shell.failedPreviews = shell.failedPreviews.concat([key]) }
+    property var failedPreviews: []
     Component.onCompleted: service.refresh()
+    function previewResult(id) {
+        return { key: "anime:danbooru_" + id, id: id, source: "anime", remote: true, previewFetch: true,
+                 preview: "https://cdn.donmai.us/sample/" + id + ".jpg" }
+    }
     IpcHandler {
         target: "wallpick-test"
         function refresh(): void { service.refresh() }
@@ -16,6 +22,15 @@ ShellRoot {
         function searchMore(): void { service.searchMore() }
         function supersede(): void { service.search("anime", ["first"]); service.search("general", ["second"]) }
         function clearSearch(): void { service.clearSearch() }
+        function preview(id: string): void { service.fetchPreview(shell.previewResult(id)) }
+        function supersedePreview(): void {
+            service.fetchPreview(shell.previewResult("slow"))
+            service.fetchPreview(shell.previewResult("8"))
+        }
+        function previewState(): string {
+            return JSON.stringify({ cache: service.previewCache, failed: shell.failedPreviews,
+                running: !!service.previewRequest, busy: service.busy })
+        }
         function searchState(): string {
             return JSON.stringify({ searching: service.searching, error: service.searchError, source: service.resultsSource,
                 page: service.resultsPage, more: service.resultsMore, keys: service.results.map(result => result.key),

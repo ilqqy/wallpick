@@ -28,6 +28,7 @@ class ActionsTest(unittest.TestCase):
             "WALLPICK_MIN_WIDTH": "100",
             "WALLPICK_MIN_HEIGHT": "80",
             "WALLPICK_PYWAL": "0",
+            "XDG_CACHE_HOME": str(self.root / "cache"),
         })
         env.start()
         self.addCleanup(env.stop)
@@ -345,7 +346,17 @@ class ActionsTest(unittest.TestCase):
                 raise actions.ActionError("Wallpaper search failed; check the network or query")
             return yandere if "yande.re" in url else danbooru
 
-        with patch.object(actions, "fetch_json", side_effect=fake_json), redirect_stderr(io.StringIO()) as errors:
+        def fake_process(argv, timeout):
+            for index, value in enumerate(argv):
+                if value == "--output":
+                    observed.append(argv[index + 2])
+                    Path(argv[index + 1]).write_bytes(b"jpeg")
+            return self.completed(argv)
+
+        with patch.object(actions, "fetch_json", side_effect=fake_json), \
+             patch.object(actions, "require_command", side_effect=lambda name: name), \
+             patch.object(actions, "run_process", side_effect=fake_process), \
+             redirect_stderr(io.StringIO()) as errors:
             found = actions.search("anime", ["bleach"])
         self.assertIn("Konachan:", errors.getvalue())
         self.assertEqual([result["key"] for result in found["results"]], ["anime:yandere_5", "anime:danbooru_7"])
@@ -353,12 +364,55 @@ class ActionsTest(unittest.TestCase):
         yande, dan = found["results"]
         self.assertEqual((yande["name"], yande["url"]), ("yande.re #5", "https://assets.yande.re/p/5.jpg"))
         self.assertEqual(dan["name"], "Danbooru #7")
-        self.assertIn("/360x360/", dan["url"])
+        self.assertTrue(dan["url"].startswith("file://") and dan["url"].endswith("/danbooru_7-thumb.jpg"))
+        self.assertTrue(any("/360x360/" in url for url in observed))
         self.assertIn("/sample/", dan["preview"])
         self.assertIn("/original/", dan["full"])
         danbooru_url = next(url for url in observed if "danbooru.donmai.us/posts.json" in url)
         for part in ("order%3Ascore", "rating%3Ag", "ratio%3A%3E%3D1.3", "bleach"):
             self.assertIn(part, danbooru_url)
+
+    def test_danbooru_previews_are_served_from_a_local_cache(self):
+        cache = Path(os.environ["XDG_CACHE_HOME"])
+        posts = [self.danbooru_post(7), self.danbooru_post(9)]
+        downloads = []
+
+        def fake_process(argv, timeout):
+            # Danbooru's CDN rejects Qt, so curl fetches the card thumbnails;
+            # #9's download fails and its card falls back to no thumbnail.
+            pairs = [(argv[i + 1], argv[i + 2]) for i, value in enumerate(argv) if value == "--output"]
+            for path, url in pairs:
+                downloads.append(url)
+                if "/360x360/" in url and f"{9:032x}" not in url:
+                    Path(path).write_bytes(b"jpeg")
+            return self.completed(argv, 0 if len(pairs) == 1 else 22)
+
+        def fake_json(url):
+            if "tag" in url.split("?")[0]:
+                return []
+            return posts if "danbooru" in url else []
+
+        with patch.object(actions, "require_command", side_effect=lambda name: name), \
+             patch.object(actions, "fetch_json", side_effect=fake_json), \
+             patch.object(actions, "run_process", side_effect=fake_process):
+            found = actions.search("anime", ["bleach"])
+            first, second = found["results"]
+            thumb = cache / "wallpick" / "previews" / "danbooru_7-thumb.jpg"
+            self.assertEqual(first["url"], thumb.as_uri())
+            self.assertTrue(first["previewFetch"])
+            self.assertEqual(second["url"], "")
+            self.assertTrue(first["preview"].startswith("https://cdn.donmai.us/sample/"))
+            self.assertEqual(len(downloads), 2)
+            # A second search reuses the cached thumbnail.
+            actions.search("anime", ["bleach"])
+            self.assertEqual(len(downloads), 3)
+
+            preview = actions.fetch_preview("anime", "7", "https://cdn.donmai.us/360x360/" + f"{7:032x}.jpg")
+            self.assertEqual(preview["url"], (cache / "wallpick" / "previews" / "danbooru_7-preview.jpg").as_uri())
+            with self.assertRaises(actions.ActionError):
+                actions.fetch_preview("anime", "7", "https://evil.example/a.jpg")
+            with self.assertRaisesRegex(actions.ActionError, "could not be downloaded"):
+                actions.fetch_preview("anime", "8", "https://cdn.donmai.us/sample/missing.jpg")
 
     def test_search_fails_only_when_every_board_fails(self):
         def fake_json(url):

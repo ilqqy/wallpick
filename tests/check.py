@@ -110,6 +110,15 @@ if sys.argv[1] == 'search':
     print(json.dumps({'source': source, 'page': page, 'more': page < 2,
                       'results': [{'key': f'{source}:{i}', 'id': str(i)} for i in ids]}))
     raise SystemExit(0)
+if sys.argv[1] == 'preview':
+    (root / 'preview-argv.json').write_text(json.dumps(sys.argv[1:]))
+    identifier = sys.argv[4]
+    if identifier == 'slow':
+        time.sleep(1)
+    if identifier == 'bad':
+        raise SystemExit(1)
+    print(json.dumps({'url': f'file:///cache/danbooru_{identifier}-preview.jpg'}))
+    raise SystemExit(0)
 (root / 'argv.json').write_text(json.dumps(sys.argv[1:]))
 marker = root / 'pictures/.current-wallpaper/wallpaper.jpg'
 if (root / 'mode').read_text() == 'fail':
@@ -131,8 +140,8 @@ marker.write_bytes(image.read_bytes())
     shutil.copyfile(PROJECT / "tests/service.qml", runtime / "src/service-test.qml")
     config = str(runtime / "src/service-test.qml")
 
-    def ipc(function):
-        return subprocess.check_output(["qs", "-p", config, "ipc", "call", "wallpick-test", function],
+    def ipc(function, *arguments):
+        return subprocess.check_output(["qs", "-p", config, "ipc", "call", "wallpick-test", function, *arguments],
                                        env=env, text=True, stderr=subprocess.DEVNULL)
 
     def state():
@@ -181,6 +190,24 @@ marker.write_bytes(image.read_bytes())
             cleared = search_state()
             assert not cleared["searching"] and not cleared["keys"] and not cleared["source"], cleared
             print("PASS: search lists results beside actions, appends deduplicated pages, supersedes and cancels")
+
+            def preview_state():
+                return json.loads(ipc("previewState"))
+            ipc("preview", "7")
+            cached = wait_for(preview_state, lambda s: not s["running"] and s["cache"])
+            assert cached["cache"] == {"anime:danbooru_7": "file:///cache/danbooru_7-preview.jpg"}, cached
+            assert not cached["busy"], "A preview must not occupy the action slot"
+            args = json.loads((root / "preview-argv.json").read_text())
+            assert args == ["preview", "--", "anime", "7", "https://cdn.donmai.us/sample/7.jpg"], args
+            ipc("supersedePreview")
+            wait_for(preview_state, lambda s: "anime:danbooru_8" in s["cache"], seconds=15)
+            time.sleep(1.2)
+            settled = preview_state()
+            assert "anime:danbooru_slow" not in settled["cache"] and not settled["failed"], settled
+            ipc("preview", "bad")
+            failed = wait_for(preview_state, lambda s: not s["running"] and s["failed"])
+            assert failed["failed"] == ["anime:danbooru_bad"], failed
+            print("PASS: previews Qt cannot load are cached by the backend, superseded and reported on failure")
         except Exception:
             log.flush()
             log.seek(0)

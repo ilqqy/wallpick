@@ -33,8 +33,16 @@ Item {
     property var pendingSearch: null
     property string searchOutput: ""
 
+    // Hero previews of results Qt cannot load directly (previewFetch), cached
+    // locally by the backend: result key -> local file URL.
+    property var previewCache: ({})
+    property var previewRequest: null
+    property var pendingPreview: null
+    property string previewOutput: ""
+
     signal actionFinished(string operation, bool success)
     signal searchFinished(bool success)
+    signal previewFailed(string key)
 
     function refresh() {
         if (scanProcess.running) {
@@ -130,6 +138,25 @@ Item {
         for (const word of request.words)
             argv.push(word)
         searchProcess.exec(argv)
+    }
+
+    function fetchPreview(result) {
+        if (!result || !result.previewFetch || !result.preview || previewCache[result.key])
+            return
+        if (previewRequest && previewRequest.key === result.key && !pendingPreview)
+            return
+        // Only the latest selection matters; an older download is dropped.
+        if (previewProcess.running) {
+            pendingPreview = result
+            previewProcess.running = false
+            return
+        }
+        pendingPreview = null
+        previewRequest = result
+        previewOutput = ""
+        previewProcess.exec(["timeout", "--signal=TERM", "--kill-after=5s", "60s",
+                             AppConfig.pythonCommand, AppConfig.actionsPath, "preview", "--",
+                             result.source, result.id, result.preview])
     }
 
     function applyResult(result) {
@@ -240,6 +267,39 @@ Item {
             service.resultsMore = !!parsed.more && added.length > 0
             service.searchError = ""
             service.searchFinished(true)
+        }
+    }
+
+    Process {
+        id: previewProcess
+        stdout: StdioCollector { onStreamFinished: service.previewOutput = text }
+        stderr: StdioCollector {
+            onStreamFinished: {
+                if (text.trim())
+                    console.warn("wallpick preview:", text.trim())
+            }
+        }
+        onExited: (exitCode, exitStatus) => {
+            const request = service.previewRequest
+            service.previewRequest = null
+            if (service.pendingPreview) {
+                const next = service.pendingPreview
+                Qt.callLater(() => { if (service.pendingPreview === next) service.fetchPreview(next) })
+                return
+            }
+            if (!request)
+                return
+            let parsed = null
+            if (exitCode === 0) {
+                try { parsed = JSON.parse(service.previewOutput) } catch (exception) { parsed = null }
+            }
+            if (!parsed || !parsed.url) {
+                service.previewFailed(request.key)
+                return
+            }
+            const cache = Object.assign({}, service.previewCache)
+            cache[request.key] = parsed.url
+            service.previewCache = cache
         }
     }
 

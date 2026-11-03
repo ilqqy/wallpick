@@ -22,8 +22,11 @@ ShellRoot {
         property string searchError: ""
         property string searched: ""
         property string resultAction: ""
+        property var previewCache: ({})
         signal actionFinished(string operation, bool success)
         signal searchFinished(bool success)
+        signal previewFailed(string key)
+        function fetchPreview(result) {}
         function refresh() {}
         function apply(path) { applications++ }
         function random(command, words) { service.command = command; return true }

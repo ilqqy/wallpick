@@ -45,9 +45,13 @@ BOORUS = {
     "konachan.com": {"kind": "moebooru", "label": "Konachan", "prefix": "konachan", "files": "konachan.com"},
     "yande.re": {"kind": "moebooru", "label": "yande.re", "prefix": "yandere", "files": "yande.re",
                  "landscape": True},
+    # Danbooru's image CDN refuses Qt's network requests, so its previews are
+    # fetched by curl into a local cache ("proxy") and shown from there.
     DANBOORU: {"kind": "danbooru", "label": "Danbooru", "prefix": "danbooru", "files": "donmai.us",
-               "landscape": True},
+               "landscape": True, "proxy": True},
 }
+PREVIEW_CACHE_KEEP = 600
+MAX_PREVIEW_BYTES = 8 * 1024 * 1024
 # The boards each searchable source lists, with that board's rating filter.
 SEARCH_BOORUS = {
     "anime": (("konachan.net", "safe"), ("yande.re", "safe"), (DANBOORU, "g")),
@@ -320,6 +324,46 @@ def curl_base() -> list[str]:
         "--proto", "=https", "--proto-redir", "=https", "--max-redirs", "3",
         "--connect-timeout", "8",
     ]
+
+
+def preview_cache_dir() -> Path:
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "wallpick" / "previews"
+    cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return cache
+
+
+def prune_preview_cache(directory: Path) -> None:
+    try:
+        files = sorted((path for path in directory.iterdir() if path.is_file()),
+                       key=lambda path: path.stat().st_mtime_ns, reverse=True)
+        for path in files[PREVIEW_CACHE_KEEP:]:
+            path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def cache_previews(wanted: dict[Path, str]) -> set[Path]:
+    """Download remote previews to local paths in one curl run; returns the
+    paths that are present afterwards. A failed preview is simply missing."""
+    missing = {path: url for path, url in wanted.items() if not (path.is_file() and path.stat().st_size)}
+    if missing:
+        argv = curl_base() + ["--parallel", "--parallel-max", "8", "--remove-on-error",
+                              "--max-time", "40", "--max-filesize", str(MAX_PREVIEW_BYTES)]
+        for path, url in missing.items():
+            argv += ["--output", str(path), url]
+        try:
+            run_process(argv, 45)
+        except ActionError as error:
+            print(f"wallpick: {error}", file=sys.stderr)
+    present = set()
+    for path in wanted:
+        try:
+            if path.is_file() and path.stat().st_size:
+                os.utime(path)
+                present.add(path)
+        except OSError:
+            continue
+    return present
 
 
 def fetch_json(url: str) -> object:
@@ -715,7 +759,40 @@ def search(source: str, words: list[str], page: int = 1) -> dict:
     # Alternate between boards so each one's best-rated posts lead the list.
     mixed = [result for result in chain.from_iterable(zip_longest(*(results for results, _ in pages)))
              if result is not None]
+    proxy_thumbnails(mixed)
     return {"source": source, "page": page, "more": any(more for _, more in pages), "results": mixed}
+
+
+def proxied(result: dict) -> bool:
+    return any(BOORUS[site].get("proxy") and result["stem"].startswith(BOORUS[site]["prefix"] + "_")
+               for site in BOORUS)
+
+
+def proxy_thumbnails(results: list[dict]) -> None:
+    """Point proxied results' cards at local copies; their hero preview is
+    fetched on demand with the "preview" command."""
+    targets = [result for result in results if proxied(result)]
+    if not targets:
+        return
+    directory = preview_cache_dir()
+    wanted = {directory / f"{result['stem']}-thumb.jpg": result["url"] for result in targets}
+    present = cache_previews(wanted)
+    for result, path in zip(targets, wanted):
+        result["url"] = path.as_uri() if path in present else ""
+        result["previewFetch"] = True
+    prune_preview_cache(directory)
+
+
+def fetch_preview(source: str, identifier: str, url: str) -> dict:
+    """Cache one result's hero preview locally and return its file URL."""
+    source = search_source(source)
+    identifier = result_id(identifier)
+    prefix, files = result_board(source, url)
+    url = https_url(url, files)
+    path = preview_cache_dir() / f"{prefix}_{identifier}-preview.jpg"
+    if path not in cache_previews({path: url}):
+        raise ActionError("The preview could not be downloaded")
+    return {"path": str(path), "url": path.as_uri()}
 
 
 def result_board(source: str, url: str) -> tuple[str, str]:
@@ -764,7 +841,7 @@ def favorite_result(source: str, identifier: str, url: str) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Wallpick standalone wallpaper actions")
     parser.add_argument("command", choices=["apply", "favorite-current", "randomanime", "randomwall", "randomgooner",
-                                            "search", "apply-result", "favorite-result"])
+                                            "search", "preview", "apply-result", "favorite-result"])
     parser.add_argument("arguments", nargs="*")
     args = parser.parse_args(argv)
     try:
@@ -773,6 +850,12 @@ def main(argv: list[str] | None = None) -> int:
             if len(args.arguments) < 2 or not args.arguments[1].isdigit():
                 raise ActionError("Search requires a source, a page number and optional tags")
             print(json.dumps(search(args.arguments[0], args.arguments[2:], int(args.arguments[1])), ensure_ascii=False))
+            return 0
+        if args.command == "preview":
+            # Only fills the preview cache, so it runs beside other actions too.
+            if len(args.arguments) != 3:
+                raise ActionError("A preview needs a source, an ID and an image URL")
+            print(json.dumps(fetch_preview(*args.arguments)))
             return 0
         with action_lock():
             if args.command == "apply":
