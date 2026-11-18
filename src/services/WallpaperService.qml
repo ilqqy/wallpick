@@ -15,6 +15,8 @@ Item {
     property string actionOutput: ""
     property string actionError: ""
     property string selectedForAction: ""
+    // The source a result action works on; Workshop downloads take minutes.
+    property string operationSource: ""
     property bool currentUncertain: false
     property var lastKnownImage: null
     property bool hasSeenCurrent: false
@@ -54,17 +56,20 @@ Item {
         scanProcess.exec([AppConfig.pythonCommand, AppConfig.backendPath, "scan"])
     }
 
-    function run(command, args, label, selectedPath) {
+    function run(command, args, label, selectedPath, source) {
         if (busy)
             return false
         busy = true
         error = ""
         message = ""
         operation = label
+        operationSource = source || ""
         selectedForAction = selectedPath || ""
         actionOutput = ""
         actionError = ""
-        const argv = ["timeout", "--signal=TERM", "--kill-after=5s", "180s",
+        // steamcmd updates itself on first use and videos are large.
+        const limit = operationSource === "workshop" ? "600s" : "180s"
+        const argv = ["timeout", "--signal=TERM", "--kill-after=5s", limit,
                       AppConfig.pythonCommand, AppConfig.actionsPath, command, "--"]
         for (let i = 0; i < args.length; ++i)
             argv.push(args[i])
@@ -79,9 +84,9 @@ Item {
     }
 
     function random(command, words) {
-        if (["randomanime", "randomwall", "randomgooner"].indexOf(command) < 0)
+        if (["randomanime", "randomwall", "randomgooner", "randomworkshop"].indexOf(command) < 0)
             return false
-        return run(command, words, command, "")
+        return run(command, words, command, "", command === "randomworkshop" ? "workshop" : "")
     }
 
     function favoriteCurrent() {
@@ -89,7 +94,7 @@ Item {
     }
 
     function search(source, words) {
-        if (!["anime", "general", "gooner"].includes(source))
+        if (!["anime", "general", "gooner", "workshop"].includes(source))
             return false
         results = []
         resultsSource = source
@@ -162,13 +167,13 @@ Item {
     function applyResult(result) {
         if (!result || !result.remote)
             return false
-        return run("apply-result", [result.source, result.id, result.full], "ApplyResult", "")
+        return run("apply-result", [result.source, result.id, result.full], "ApplyResult", "", result.source)
     }
 
     function favoriteResult(result) {
         if (!result || !result.remote)
             return false
-        return run("favorite-result", [result.source, result.id, result.full], "FavoriteResult", "")
+        return run("favorite-result", [result.source, result.id, result.full], "FavoriteResult", "", result.source)
     }
 
     function favoriteSelected(path) {
@@ -178,6 +183,7 @@ Item {
         error = ""
         message = ""
         operation = "Favorite"
+        operationSource = ""
         selectedForAction = path
         actionOutput = ""
         actionError = ""
@@ -196,7 +202,7 @@ Item {
                         service.currentUncertain = false
                         let known = null
                         if (parsed.appliedPath) {
-                            for (const key of ["favorites", "anime", "general", "gooner"]) {
+                            for (const key of ["favorites", "anime", "general", "gooner", "workshop"]) {
                                 const match = parsed.sources[key].items.find(item => item.path === parsed.appliedPath)
                                 if (match) { known = match; break }
                             }
@@ -317,6 +323,11 @@ Item {
                                   completedOperation === "Favorite" || completedOperation === "FavoriteResult" ? "Added to favorites" :
                                   "Random wallpaper fetched and applied"
                 service.error = ""
+            } else if (exitCode === 3) {
+                // Something only the user can fix, such as signing in to Steam;
+                // the backend's own sentence says what to do.
+                const lines = service.actionError.trim().split("\n").filter(line => line.startsWith("wallpick: "))
+                service.error = lines.length ? lines[lines.length - 1].slice(10) : "This action needs your attention."
             } else {
                 service.error = exitCode === 124 ? "The request timed out. Please try again." :
                                 completedOperation === "Apply" ? "Could not apply this wallpaper." :

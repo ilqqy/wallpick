@@ -5,16 +5,20 @@ import io
 import json
 import os
 from pathlib import Path
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
+import lz4.block
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import actions  # noqa: E402
+import backend  # noqa: E402
+import scenepkg  # noqa: E402
 
 
 class ActionsTest(unittest.TestCase):
@@ -29,6 +33,11 @@ class ActionsTest(unittest.TestCase):
             "WALLPICK_MIN_HEIGHT": "80",
             "WALLPICK_PYWAL": "0",
             "XDG_CACHE_HOME": str(self.root / "cache"),
+            # Keep the user's real Steam folders and steamcmd login out of tests.
+            "XDG_DATA_HOME": str(self.root / "data"),
+            "XDG_CONFIG_HOME": str(self.root / "config"),
+            "WALLPICK_STEAM_DIR": str(self.root / "steam"),
+            "WALLPICK_STEAM_USER": "",
         })
         env.start()
         self.addCleanup(env.stop)
@@ -591,6 +600,337 @@ class ActionsTest(unittest.TestCase):
         self.assertEqual(status, 0)
         random_action.assert_called_once_with("randomanime", ["rezero", "-chibi"])
         self.assertEqual(json.loads(output.getvalue()), {"path": "/tmp/example.png"})
+
+    # --- Steam Workshop -------------------------------------------------
+
+    def workshop_item(self, identifier, tags=("Video", "Everyone", "1920 x 1080"), **overrides):
+        item = {
+            "publishedfileid": str(identifier), "consumer_appid": 431960, "title": f"Loop {identifier}",
+            "preview_url": f"https://images.steamusercontent.com/ugc/{identifier}/ABC/",
+            "tags": [{"tag": tag, "display_name": tag} for tag in tags],
+        }
+        item.update(overrides)
+        return item
+
+    def browse_page(self, results, total_pages=3):
+        # Steam nests the listing as a JSON string inside the page's SSR data.
+        state = json.dumps({"queries": [{"state": {"data": {"current_page": 1, "total_pages": total_pages,
+                                                             "results": results}}}]})
+        data = json.dumps({"route": "/workshop/browse", "renderContext": state})
+        return f'<html><script type="application/json" id="valve-ssr-data" nonce="x">{data}</script></html>'
+
+    def test_workshop_search_lists_only_safe_landscape_videos_and_scenes(self):
+        observed = []
+        results = [self.workshop_item(1), self.workshop_item(2, tags=("Scene", "Everyone")),
+                   self.workshop_item(10, tags=("Web", "Everyone")),
+                   self.workshop_item(3, tags=("Video", "Mature")), self.workshop_item(4, tags=("Video", "Everyone", "1080 x 1920")),
+                   self.workshop_item(5, tags=("Video", "Everyone", "1280 x 720")), self.workshop_item(6, tags=("Video", "Everyone")),
+                   self.workshop_item(7, consumer_appid=4000), self.workshop_item("../8"),
+                   self.workshop_item(9, preview_url="https://evil.example/a.gif")]
+
+        def fake_text(url, data=None):
+            observed.append(url)
+            return self.browse_page(results)
+
+        with patch.dict(os.environ, {"WALLPICK_MIN_WIDTH": "1920", "WALLPICK_MIN_HEIGHT": "1080"}), \
+             patch.object(actions, "fetch_text", side_effect=fake_text):
+            found = actions.search("workshop", ["rem", "&x"], 2)
+        url = observed[0]
+        self.assertTrue(url.startswith("https://steamcommunity.com/workshop/browse/?appid=431960&"))
+        for part in ("requiredtags%5B%5D=Everyone", "p=2", "searchtext=rem%20%26x", "browsesort=textsearch"):
+            self.assertIn(part, url)
+        # The type filter takes one type, so it is left out and applied here.
+        self.assertNotIn("requiredtags%5B%5D=Video", url)
+        self.assertEqual([result["id"] for result in found["results"]], ["1", "2", "6"])
+        self.assertTrue(found["more"])
+        first = found["results"][0]
+        self.assertEqual((first["key"], first["stem"], first["name"]), ("workshop:workshop_1", "workshop_1", "Loop 1"))
+        self.assertTrue(first["url"].startswith("https://images.steamusercontent.com/ugc/1/ABC/?imw=512"))
+        self.assertEqual((first["width"], first["height"]), (1920, 1080))
+        self.assertEqual(found["results"][2]["width"], 0)
+
+    def test_workshop_without_words_lists_the_most_popular(self):
+        with patch.object(actions, "fetch_text", return_value=self.browse_page([], total_pages=1)) as fetch:
+            found = actions.search("workshop", [], 1)
+        self.assertIn("browsesort=trend&days=-1", fetch.call_args.args[0])
+        self.assertNotIn("searchtext", fetch.call_args.args[0])
+        self.assertFalse(found["more"])
+
+    def test_workshop_falls_back_to_the_public_details_api(self):
+        html = '<a href="https://steamcommunity.com/sharedfiles/filedetails/?id=11">x</a>' \
+               '<a href="https://steamcommunity.com/sharedfiles/filedetails/?id=11">y</a>' \
+               '<a href="https://steamcommunity.com/sharedfiles/filedetails/?id=12">z</a>'
+        details = {"response": {"publishedfiledetails": [
+            {**self.workshop_item(11), "consumer_app_id": 431960, "result": 1},
+            {**self.workshop_item(12), "consumer_app_id": 431960, "result": 1, "banned": 1}]}}
+        calls = []
+
+        def fake_text(url, data=None):
+            calls.append((url, data))
+            return html if data is None else json.dumps(details)
+
+        with patch.object(actions, "fetch_text", side_effect=fake_text):
+            found = actions.search("workshop", ["x"], 1)
+        self.assertEqual([result["id"] for result in found["results"]], ["11"])
+        self.assertEqual(calls[1][1], "itemcount=2&publishedfileids%5B0%5D=11&publishedfileids%5B1%5D=12")
+
+    def steam_item(self, base, identifier, project=None, video="loop.mp4"):
+        folder = base / "steamapps" / "workshop" / "content" / "431960" / str(identifier)
+        folder.mkdir(parents=True)
+        (folder / video).write_bytes(b"video")
+        self.image(folder / "preview.png", (64, 64))
+        (folder / "project.json").write_text(json.dumps(project or {
+            "type": "Video", "file": video, "preview": "preview.png", "title": f"Local {identifier}"}))
+        return folder
+
+    def fake_ffmpeg(self, calls):
+        def process(argv, timeout):
+            calls.append(argv)
+            if argv[0] == "ffprobe":
+                return self.completed(argv, stdout=b"10.0\n")
+            self.image(Path(argv[-1]), (160, 90))
+            return self.completed(argv)
+        return process
+
+    def test_local_subscription_becomes_a_still_without_steamcmd(self):
+        folder = self.steam_item(self.root / "steam", 21)
+        calls = []
+        with patch.object(actions, "require_command", side_effect=lambda name: name), \
+             patch.object(actions.shutil, "which", side_effect=lambda name: name), \
+             patch.object(actions.subprocess, "run") as steamcmd, \
+             patch.object(actions, "run_process", side_effect=self.fake_ffmpeg(calls)):
+            still = actions.download_result("workshop", "21", "steam")
+            again = actions.download_result("workshop", "21", "steam")
+        steamcmd.assert_not_called()
+        self.assertEqual(still, self.root / "Pictures" / "random_workshop" / "workshop_21.jpg")
+        self.assertEqual(again, still)
+        self.assertEqual(actions.validate_image(still), ("jpg", (160, 90)))
+        ffmpeg = [argv for argv in calls if argv[0] == "ffmpeg"]
+        self.assertEqual(len(ffmpeg), 1, "the saved still is reused")
+        self.assertEqual(ffmpeg[0][ffmpeg[0].index("-ss") + 1], "1.5")
+        self.assertIn(str(folder / "loop.mp4"), ffmpeg[0])
+        self.assertTrue(folder.is_dir(), "Steam's own download is left alone")
+        self.assertEqual([path.name for path in still.parent.iterdir()], ["workshop_21.jpg"])
+
+    def test_unreadable_video_leaves_no_partial_files(self):
+        self.steam_item(self.root / "steam", 22)
+        with patch.object(actions, "require_command", side_effect=lambda name: name), \
+             patch.object(actions.shutil, "which", return_value=None), \
+             patch.object(actions, "run_process", side_effect=lambda argv, timeout: self.completed(argv, 1)):
+            with self.assertRaisesRegex(actions.ActionError, "frame"):
+                actions.download_result("workshop", "22", "steam")
+        self.assertEqual(list((self.root / "Pictures" / "random_workshop").iterdir()), [])
+
+    def test_project_json_cannot_point_outside_its_item(self):
+        outside = self.root / "steam" / "secret.mp4"
+        outside.parent.mkdir(parents=True)
+        outside.write_bytes(b"x")
+        self.steam_item(self.root / "steam", 23, {"type": "video", "file": "../../../../../secret.mp4"})
+        self.steam_item(self.root / "steam", 24, {"type": "scene", "file": "scene.pkg"})
+        import workshop
+        self.assertIsNone(workshop.read_project(workshop.find_item("23")))
+        self.assertIsNone(workshop.read_project(workshop.find_item("24")))
+        self.assertEqual(workshop.wallpaper_items(), [])
+
+    def test_workshop_download_requires_a_steam_login(self):
+        with patch.object(actions.shutil, "which", side_effect=lambda name: name), \
+             patch.object(actions.subprocess, "run") as steamcmd, redirect_stderr(io.StringIO()) as errors:
+            status = actions.main(["apply-result", "--", "workshop", "31", "steam"])
+        self.assertEqual(status, 3)
+        self.assertIn("wallpick steam-login", errors.getvalue())
+        steamcmd.assert_not_called()
+
+    def test_steamcmd_downloads_privately_then_keeps_only_the_still(self):
+        calls = []
+        steam_root = self.root / "data" / "wallpick" / "steamcmd" / ".local" / "share" / "Steam"
+
+        def fake_run(argv, **options):
+            calls.append((argv, options))
+            self.steam_item(steam_root, 41)
+            return self.completed(argv, stdout=b'\x1b[0mSuccess. Downloaded item 41 to "/x"')
+
+        with patch.dict(os.environ, {"WALLPICK_STEAM_USER": "someone_1"}), \
+             patch.object(actions, "require_command", side_effect=lambda name: name), \
+             patch.object(actions.shutil, "which", side_effect=lambda name: name), \
+             patch.object(actions.subprocess, "run", side_effect=fake_run), \
+             patch.object(actions, "run_process", side_effect=self.fake_ffmpeg([])):
+            still = actions.download_result("workshop", "41", "https://steamcommunity.com/sharedfiles/filedetails/?id=41")
+        argv, options = calls[0]
+        self.assertEqual(argv, ["steamcmd", "+login", "someone_1", "+workshop_download_item", "431960", "41", "+quit"])
+        home = self.root / "data" / "wallpick" / "steamcmd"
+        self.assertEqual((options["env"]["HOME"], options["cwd"]), (str(home), home))
+        self.assertEqual(options["stdin"], subprocess.DEVNULL)
+        self.assertTrue(still.is_file())
+        self.assertFalse((steam_root / "steamapps" / "workshop" / "content" / "431960" / "41").exists())
+
+    def test_steamcmd_failures_say_what_to_do(self):
+        cases = [(b"Cached credentials not found.\npassword: \nLogging in user 'a' to Steam Public...ERROR (Invalid Password)",
+                  "sign-in has expired"),
+                 (b"Downloading item 51 ...\nERROR! Download item 51 failed (Failure).", "must own Wallpaper Engine"),
+                 (b"Rate Limit Exceeded", "limiting")]
+        for output, message in cases:
+            with self.subTest(message=message), patch.dict(os.environ, {"WALLPICK_STEAM_USER": "a"}), \
+                 patch.object(actions.shutil, "which", side_effect=lambda name: name), \
+                 patch.object(actions.subprocess, "run", return_value=self.completed([], 5, stdout=output)), \
+                 redirect_stderr(io.StringIO()):
+                with self.assertRaisesRegex(actions.NoticeError, message):
+                    actions.workshop_still("51")
+        with patch.dict(os.environ, {"WALLPICK_STEAM_USER": "a +quit"}):
+            with self.assertRaisesRegex(actions.NoticeError, "invalid"):
+                actions.steam_user()
+
+    def test_scan_lists_downloaded_videos_until_they_have_a_still(self):
+        self.steam_item(self.root / "steam", 61)
+        flatpak = self.root / "library"
+        (self.root / "steam" / "steamapps" / "libraryfolders.vdf").write_text(
+            '"libraryfolders"\n{\n "1"\n {\n  "path"\t\t"%s"\n }\n}\n' % flatpak)
+        self.steam_item(flatpak, 62)
+        data = backend.scan()
+        items = data["sources"]["workshop"]["items"]
+        self.assertEqual(sorted(item["id"] for item in items), ["61", "62"])
+        pending = next(item for item in items if item["id"] == "61")
+        self.assertTrue(pending["remote"])
+        self.assertEqual(pending["name"], "Local 61")
+        self.assertTrue(pending["url"].startswith("file://") and pending["url"].endswith("preview.png"))
+        self.assertFalse(any(item["source"] == "workshop" and item.get("remote")
+                             for item in data["sources"]["recent"]["items"]))
+        self.image(self.root / "Pictures" / "random_workshop" / "workshop_61.jpg", image_format="JPEG")
+        items = backend.scan()["sources"]["workshop"]["items"]
+        self.assertEqual(sorted((item.get("id") or item["name"]) for item in items), ["62", "workshop_61.jpg"])
+
+    def test_random_workshop_applies_a_listed_video(self):
+        pages = []
+
+        def fake_page(words, page):
+            pages.append(page)
+            return [{"id": "71"}], 1
+
+        with patch.object(actions, "workshop_page", side_effect=fake_page), \
+             patch.object(actions, "workshop_still", return_value=Path("/w/workshop_71.jpg")) as still, \
+             patch.object(actions, "apply", return_value={"path": "/w/workshop_71.jpg"}):
+            result = actions.random_wallpaper("randomworkshop", ["rain"])
+        still.assert_called_once_with("71")
+        self.assertEqual(pages, [1])
+        self.assertEqual(result["source"], "workshop")
+
+    # --- Scene packages ---------------------------------------------------
+
+    def tex(self, size, payload, *, tex_format=0, flags=0, texture=None, container="TEXB0003",
+            image_format=-1, mipmap=None, compress=False):
+        """A .tex texture laid out as RePKG's TexWriter writes one."""
+        texture = texture or size
+        mipmap = mipmap or texture
+        version = int(container[4:])
+        data = b"TEXV0005\0TEXI0001\0" + struct.pack("<7i", tex_format, flags, *texture, *size, 0)
+        data += container.encode() + b"\0" + struct.pack("<i", 1)
+        if version >= 3:
+            data += struct.pack("<i", image_format)
+        if version == 4:
+            data += struct.pack("<i", 0)
+        data += struct.pack("<i", 1) + struct.pack("<2i", *mipmap)
+        stored = lz4.block.compress(payload, store_size=False) if compress else payload
+        if version >= 2:
+            data += struct.pack("<2i", 1 if compress else 0, len(payload))
+        return data + struct.pack("<i", len(stored)) + stored
+
+    def pkg(self, entries):
+        """A scene.pkg laid out as RePKG's PackageWriter writes one."""
+        header, body = b"", b""
+        for name, data in entries.items():
+            encoded = name.encode()
+            header += struct.pack("<i", len(encoded)) + encoded + struct.pack("<2i", len(body), len(data))
+            body += data
+        return struct.pack("<i", 8) + b"PKGV0001" + struct.pack("<i", len(entries)) + header + body
+
+    def jpeg_bytes(self, size, color):
+        buffer = io.BytesIO()
+        Image.new("RGB", size, color).save(buffer, format="JPEG", quality=95)
+        return buffer.getvalue()
+
+    def scene_folder(self, identifier, entries, base=None, title="Scene"):
+        folder = (base or self.root / "steam") / "steamapps" / "workshop" / "content" / "431960" / str(identifier)
+        folder.mkdir(parents=True)
+        (folder / "scene.pkg").write_bytes(self.pkg(entries))
+        (folder / "project.json").write_text(json.dumps({"type": "scene", "file": "scene.json", "title": title}))
+        return folder
+
+    def test_scene_uses_its_largest_landscape_picture(self):
+        background = self.jpeg_bytes((320, 180), (200, 40, 40))
+        folder = self.scene_folder(81, {
+            "scene.json": b"{}",
+            "materials/small.tex": self.tex((160, 90), self.jpeg_bytes((160, 90), (0, 0, 255)), image_format=2),
+            # Bigger, but square: an effect atlas, not the background.
+            "materials/atlas.tex": self.tex((512, 512), b"\0" * 512 * 512 * 4),
+            "materials/anim.tex": self.tex((640, 360), b"\0" * 640 * 360 * 4, flags=scenepkg.FLAG_GIF),
+            "materials/background.tex": self.tex((320, 180), background, image_format=2),
+        })
+        picture = scenepkg.main_picture(folder)
+        self.assertEqual(picture.size, (320, 180))
+        red, green, blue = picture.convert("RGB").getpixel((10, 10))
+        self.assertGreater(red, 180)
+        self.assertLess(green + blue, 120)
+
+    def test_raw_lz4_texture_is_cropped_to_its_picture(self):
+        texture = Image.new("RGBA", (256, 256), (0, 0, 0, 255))
+        texture.paste(Image.new("RGBA", (200, 150), (10, 200, 30, 255)))
+        folder = self.scene_folder(82, {"materials/bg.tex": self.tex(
+            (200, 150), texture.tobytes(), texture=(256, 256), container="TEXB0002", compress=True)})
+        picture = scenepkg.main_picture(folder)
+        self.assertEqual(picture.size, (200, 150))
+        self.assertEqual(picture.getpixel((199, 149)), (10, 200, 30, 255))
+
+    def test_dxt_textures_decode(self):
+        # One 4x4 block per format, every pixel colour 0 (pure red in RGB565).
+        red = 0xF800
+        dxt1 = struct.pack("<HHI", red, red, 0)
+        dxt5 = bytes([255, 255, 0, 0, 0, 0, 0, 0]) + dxt1
+        for tex_format, block in ((scenepkg.TEX_DXT1, dxt1), (scenepkg.TEX_DXT5, dxt5)):
+            with self.subTest(tex_format=tex_format):
+                folder = self.scene_folder(83 + tex_format, {"materials/bg.tex": self.tex(
+                    (8, 4), block * 2, tex_format=tex_format)})
+                picture = scenepkg.main_picture(folder)
+                self.assertEqual(picture.size, (8, 4))
+                self.assertEqual(picture.getpixel((7, 3))[:3], (255, 0, 0))
+
+    def test_loose_materials_are_read_when_there_is_no_package(self):
+        folder = self.root / "steam" / "steamapps" / "workshop" / "content" / "431960" / "91"
+        (folder / "materials").mkdir(parents=True)
+        (folder / "materials" / "bg.tex").write_bytes(
+            self.tex((320, 180), self.jpeg_bytes((320, 180), (0, 90, 0)), image_format=2))
+        self.assertEqual(scenepkg.main_picture(folder).size, (320, 180))
+
+    def test_malformed_packages_are_rejected(self):
+        good = self.tex((320, 180), self.jpeg_bytes((320, 180), (1, 2, 3)), image_format=2)
+        truncated = self.pkg({"materials/bg.tex": good})[:-50]
+        outside = bytearray(self.pkg({"materials/bg.tex": good}))
+        offset = 4 + 8 + 4 + 4 + len("materials/bg.tex")
+        outside[offset:offset + 4] = struct.pack("<i", 10_000_000)
+        lying = self.tex((320, 180), b"\0" * 64, container="TEXB0002", compress=True)
+        lying = lying.replace(struct.pack("<2i", 1, 64), struct.pack("<2i", 1, 64_000_000), 1)
+        for name, data in (("truncated", truncated), ("outside", bytes(outside)), ("not a package", b"garbage!"),
+                           ("bad lz4", self.pkg({"materials/bg.tex": lying}))):
+            with self.subTest(name=name):
+                folder = self.root / name
+                folder.mkdir()
+                (folder / "scene.pkg").write_bytes(data)
+                with self.assertRaises(scenepkg.SceneError):
+                    scenepkg.main_picture(folder)
+
+    def test_scene_subscription_becomes_a_still(self):
+        self.scene_folder(92, {"materials/bg.tex": self.tex(
+            (320, 180), self.jpeg_bytes((320, 180), (90, 60, 30)), image_format=2)}, title="Quiet room")
+        self.scene_folder(93, {"materials/bg.tex": self.tex(
+            (64, 36), self.jpeg_bytes((64, 36), (90, 60, 30)), image_format=2)})
+        items = {item["id"]: item for item in backend.scan()["sources"]["workshop"]["items"]}
+        self.assertEqual(items["92"]["name"], "Quiet room")
+        with patch.object(actions.subprocess, "run") as steamcmd:
+            still = actions.download_result("workshop", "92", "steam")
+            with self.assertRaisesRegex(actions.NoticeError, "only 64×36"):
+                actions.download_result("workshop", "93", "steam")
+        steamcmd.assert_not_called()
+        self.assertEqual(still.name, "workshop_92.jpg")
+        self.assertEqual(actions.validate_image(still), ("jpg", (320, 180)))
+        self.assertEqual(sorted(path.name for path in still.parent.iterdir()), ["workshop_92.jpg"])
 
 
 if __name__ == "__main__":

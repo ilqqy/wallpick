@@ -107,6 +107,7 @@ ShellRoot {
         function randomSource(key: string): void { popup.randomFromSource(key) }
         function randomWall(): void { wallpapers.random("randomwall", []) }
         function randomGooner(): void { wallpapers.random("randomgooner", []) }
+        function randomWorkshop(): void { wallpapers.random("randomworkshop", []) }
         function search(source: string, query: string): void { root.open(); popup.searchFor(source, query) }
         function closeResults(): void { popup.closeResults(false) }
         function searchStatus(): string {

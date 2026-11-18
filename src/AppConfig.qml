@@ -16,6 +16,8 @@ QtObject {
         // Anime searches Konachan, yande.re and Danbooru; Random uses Konachan.
         { key: "anime", label: "Anime", hint: "Konachan · yande.re · Danbooru · safe", command: "randomanime" },
         { key: "general", label: "Non-anime", hint: "Wallhaven · safe", command: "randomwall" },
-        { key: "gooner", label: "Gooner", hint: "Questionable", command: "randomgooner" }
+        { key: "gooner", label: "Gooner", hint: "Questionable", command: "randomgooner" },
+        // Wallpaper Engine videos, set as a still frame; downloads use steamcmd.
+        { key: "workshop", label: "Workshop", hint: "Steam Workshop videos · safe", command: "randomworkshop" }
     ]
 }

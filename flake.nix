@@ -5,9 +5,18 @@
   outputs = { self, nixpkgs }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
-      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system (import nixpkgs { inherit system; }));
-      pythonFor = pkgs: pkgs.python3.withPackages (ps: [ ps.pillow ]);
-      runtimeFor = pkgs: [ (pythonFor pkgs) pkgs.awww pkgs.curl pkgs.cacert pkgs.coreutils pkgs.pywal ];
+      # steamcmd downloads Steam Workshop wallpapers. It is unfree but
+      # redistributable; nothing else unfree is allowed in.
+      unfree = [ "steamcmd" "steam-unwrapped" ];
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system (import nixpkgs {
+        inherit system;
+        config.allowUnfreePredicate = pkg: builtins.elem (nixpkgs.lib.getName pkg) unfree;
+      }));
+      pythonFor = pkgs: pkgs.python3.withPackages (ps: [ ps.pillow ps.lz4 ]);
+      # steamcmd only exists for x86_64; elsewhere Workshop search still works
+      # and downloads report that steamcmd is unavailable.
+      runtimeFor = pkgs: [ (pythonFor pkgs) pkgs.awww pkgs.curl pkgs.cacert pkgs.coreutils pkgs.pywal pkgs.ffmpeg-headless ]
+        ++ nixpkgs.lib.optional (nixpkgs.lib.meta.availableOn pkgs.stdenv.hostPlatform pkgs.steamcmd) pkgs.steamcmd;
       cleanSource = builtins.path {
         path = ./.;
         name = "wallpick-source";

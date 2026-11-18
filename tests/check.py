@@ -39,7 +39,9 @@ with tempfile.TemporaryDirectory(prefix="wallpick-test-") as directory:
     root = Path(directory)
     pictures = root / "pictures"
     pictures.mkdir()
-    env = dict(os.environ, WALLPICK_PICTURES_DIR=str(pictures))
+    # The real Steam folders and steamcmd login stay out of the checks.
+    env = dict(os.environ, WALLPICK_PICTURES_DIR=str(pictures), WALLPICK_STEAM_DIR=str(root / "steam"),
+               XDG_DATA_HOME=str(root / "data"), XDG_CONFIG_HOME=str(root / "config"))
 
     def scan():
         return json.loads(subprocess.check_output([sys.executable, str(BACKEND), "scan"], env=env))
@@ -77,6 +79,7 @@ with tempfile.TemporaryDirectory(prefix="wallpick-test-") as directory:
     assert subprocess.run([sys.executable, str(BACKEND), "favorite-selected", str(outside)],
                           env=env, capture_output=True).returncode != 0
     print("PASS: empty folders, current matching, image cache revision, separate source, favorite boundaries")
+    sys.path.insert(0, str(BACKEND.parent))
     module_spec = importlib.util.spec_from_file_location("wallpick_backend", BACKEND)
     backend = importlib.util.module_from_spec(module_spec)
     sys.dont_write_bytecode = True

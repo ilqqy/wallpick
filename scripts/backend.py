@@ -11,6 +11,8 @@ import subprocess
 import sys
 import time
 
+import workshop
+
 
 EXTENSIONS = {".jpg", ".jpeg", ".png"}
 FOLDERS = {
@@ -18,6 +20,8 @@ FOLDERS = {
     "anime": "random_konachan",
     "general": "random_wallhaven",
     "gooner": "random_gooner",
+    # Still frames of Wallpaper Engine video wallpapers.
+    "workshop": "random_workshop",
 }
 
 
@@ -92,6 +96,8 @@ def scan() -> dict:
         sources[key] = {"exists": folder.is_dir(), "path": str(folder), "items": collection}
         all_items.extend(collection)
 
+    add_workshop_items(sources["workshop"])
+
     # Keep the separate questionable collection out of the default feed.
     recent = sorted((item for item in all_items if item["source"] != "gooner"),
                     key=lambda item: item["mtime"], reverse=True)[:40]
@@ -100,6 +106,36 @@ def scan() -> dict:
     applied_path = next((item["path"] for item in all_items if item["applied"]), "")
     return {"pictures": str(root), "sources": sources,
             "current": current_record, "appliedPath": applied_path}
+
+
+def add_workshop_items(source: dict) -> None:
+    """Video and scene wallpapers Steam has downloaded but Wallpick has not
+    turned into a still yet. Applying one saves its still into the Workshop folder."""
+    saved = {Path(item["path"]).stem for item in source["items"]}
+    pending = []
+    for entry in workshop.wallpaper_items():
+        stem = f"workshop_{entry['id']}"
+        if stem in saved:
+            continue
+        preview = entry["preview"].as_uri() if entry["preview"] else ""
+        pending.append({
+            "key": f"workshop:{stem}",
+            "id": entry["id"],
+            "stem": stem,
+            "source": "workshop",
+            # Not an image file yet, so it is applied like a search result.
+            "remote": True,
+            "path": "",
+            "name": entry["title"] or f"Workshop #{entry['id']}",
+            "url": preview,
+            "preview": preview,
+            "full": "steam",
+            "mtime": entry["mtime"],
+            "applied": False,
+        })
+    if pending:
+        source["exists"] = True
+        source["items"] = sorted(source["items"] + pending, key=lambda item: item["mtime"], reverse=True)
 
 
 def favorite_selected(raw_path: str) -> dict:

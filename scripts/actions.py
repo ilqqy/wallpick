@@ -27,6 +27,8 @@ import warnings
 from PIL import Image, UnidentifiedImageError
 
 import backend
+import scenepkg
+import workshop
 
 
 MAX_IMAGE_BYTES = 100 * 1024 * 1024
@@ -57,7 +59,17 @@ SEARCH_BOORUS = {
     "anime": (("konachan.net", "safe"), ("yande.re", "safe"), (DANBOORU, "g")),
     "gooner": (("konachan.com", "questionable"),),
 }
-SEARCH_SOURCES = ("anime", "general", "gooner")
+SEARCH_SOURCES = ("anime", "general", "gooner", "workshop")
+WORKSHOP_HOST = "steamcommunity.com"
+WORKSHOP_FILES = "steamusercontent.com"
+WORKSHOP_PER_PAGE = 30
+# Steam's image CDN scales previews; a GIF preview comes back as one JPEG frame.
+WORKSHOP_THUMB = "?imw=512&imh=512&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=false"
+WORKSHOP_PREVIEW = "?imw=1280&imh=1280&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=false"
+# Random picks among this many pages of the most popular matching wallpapers.
+WORKSHOP_RANDOM_PAGES = 10
+STEAMCMD_TIMEOUT = 540
+STEAM_LOGIN_HINT = "run “wallpick steam-login” in a terminal"
 LANDSCAPE_RATIO = 1.3
 # Consecutive words are tried as one tag first ("jujutsu kaisen"), up to this many.
 MAX_PHRASE_WORDS = 3
@@ -67,6 +79,11 @@ DANBOORU_FREE_TAGS = 1
 
 class ActionError(Exception):
     """A recoverable action failure suitable for presentation in the UI."""
+
+
+class NoticeError(ActionError):
+    """A failure only the user can fix (such as signing in to Steam). The UI
+    shows its message as is; the command exits with status 3."""
 
 
 def run_process(argv: list[str], timeout: int, *, capture: bool = True) -> subprocess.CompletedProcess:
@@ -366,6 +383,16 @@ def cache_previews(wanted: dict[Path, str]) -> set[Path]:
     return present
 
 
+def fetch_text(url: str, *, data: str | None = None) -> str:
+    argv = curl_base() + ["--max-time", "25", "--max-filesize", "16777216"]
+    if data is not None:
+        argv += ["--data", data]
+    result = run_process(argv + [url], 30)
+    if result.returncode:
+        raise ActionError("Wallpaper search failed; check the network or query")
+    return result.stdout.decode("utf-8", "replace")
+
+
 def fetch_json(url: str) -> object:
     result = run_process(curl_base() + ["--max-time", "25", "--max-filesize", "5242880", url], 30)
     if result.returncode:
@@ -591,6 +618,8 @@ def download_image(url: str, source: str, minimum: tuple[int, int], stem: str | 
 
 
 def random_wallpaper(command: str, words: list[str]) -> dict:
+    if command == "randomworkshop":
+        return random_workshop(words)
     minimum = min_dimensions()
     url, source = image_url(command, words, minimum)
     path = download_image(url, source, minimum)
@@ -726,11 +755,320 @@ def wallhaven_result(post: object) -> dict:
     }
 
 
+def workshop_browse_url(words: list[str], page: int) -> str:
+    """A Workshop listing of safe ("Everyone") Wallpaper Engine wallpapers.
+
+    Steam's type filter takes one type, so scenes and videos are both listed
+    and web or application wallpapers are dropped from the results."""
+    query = " ".join(words)
+    # Brackets are percent-encoded so curl does not treat them as a glob.
+    params = [f"appid={workshop.APP_ID}", "section=readytouseitems",
+              "requiredtags%5B%5D=Everyone",
+              f"numperpage={WORKSHOP_PER_PAGE}", f"p={page}", "l=english"]
+    # Text search ranks by relevance; with no words, the all-time most popular.
+    params += [f"searchtext={quote(query, safe='')}", "browsesort=textsearch"] if query \
+        else ["browsesort=trend", "days=-1"]
+    return f"https://{WORKSHOP_HOST}/workshop/browse/?" + "&".join(params)
+
+
+def workshop_details(identifiers: list[str]) -> list[dict]:
+    """Item details from Steam's public API, for when a browse page no longer
+    embeds them."""
+    if not identifiers:
+        return []
+    fields = [f"itemcount={len(identifiers)}"]
+    fields += [f"publishedfileids%5B{index}%5D={identifier}" for index, identifier in enumerate(identifiers)]
+    try:
+        data = json.loads(fetch_text("https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/",
+                                     data="&".join(fields)))
+        details = data["response"]["publishedfiledetails"]
+    except (ValueError, TypeError, KeyError) as error:
+        raise ActionError("Steam Workshop returned invalid data") from error
+    items = []
+    for item in details if isinstance(details, list) else []:
+        if isinstance(item, dict) and item.get("result") == 1 and not item.get("banned"):
+            items.append({**item, "consumer_appid": item.get("consumer_app_id")})
+    return items
+
+
+def workshop_result(item: object, minimum: tuple[int, int]) -> dict:
+    if not isinstance(item, dict):
+        raise ActionError("Steam Workshop returned an invalid item")
+    identifier = str(item.get("publishedfileid", ""))
+    if not workshop.valid_id(identifier):
+        raise ActionError("Steam Workshop returned an invalid item ID")
+    if str(item.get("consumer_appid", workshop.APP_ID)) != workshop.APP_ID:
+        raise ActionError("Steam Workshop item is not a Wallpaper Engine wallpaper")
+    tags = workshop.tag_names(item)
+    # The listing already asks for both; this guards against a changed page.
+    if not tags & {"Video", "Scene"} or "Everyone" not in tags:
+        raise ActionError("Steam Workshop item is not a safe video or scene wallpaper")
+    size = workshop.resolution(tags)
+    # The tag is the creator's claim; untagged videos are checked when applied.
+    if size and (size[0] < minimum[0] or size[1] < minimum[1] or size[0] < size[1]):
+        raise ActionError("Steam Workshop video is below the minimum size")
+    preview = https_url(item.get("preview_url"), WORKSHOP_FILES).split("?")[0]
+    title = item.get("title")
+    stem = f"workshop_{identifier}"
+    return {
+        "id": identifier,
+        "key": f"workshop:{stem}",
+        "stem": stem,
+        "source": "workshop",
+        "name": title.strip()[:120] if isinstance(title, str) and title.strip() else f"Workshop #{identifier}",
+        "url": preview + WORKSHOP_THUMB,
+        "preview": preview + WORKSHOP_PREVIEW,
+        # The item page identifies the wallpaper; steamcmd does the download.
+        "full": f"https://{WORKSHOP_HOST}/sharedfiles/filedetails/?id={identifier}",
+        "width": size[0] if size else 0,
+        "height": size[1] if size else 0,
+    }
+
+
+def workshop_page(words: list[str], page: int) -> tuple[list[dict], int]:
+    """One page of matching Workshop videos and the number of pages."""
+    html = fetch_text(workshop_browse_url(words, page))
+    parsed = workshop.browse_results(html)
+    if parsed is None:
+        items, pages = workshop_details(workshop.browse_ids(html)), page
+        pages += len(items) >= WORKSHOP_PER_PAGE
+    else:
+        items, pages = parsed
+    minimum = min_dimensions()
+    return convert_posts(items, lambda item: workshop_result(item, minimum)), pages
+
+
+def steam_user_file() -> Path:
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return config / "wallpick" / "steam-user"
+
+
+def valid_steam_user(name: str) -> bool:
+    # Steam account names are letters, digits and underscores; anything else
+    # could be read by steamcmd as one of its own commands.
+    return bool(re.fullmatch(r"[A-Za-z0-9_]{1,64}", name))
+
+
+def steam_user() -> str:
+    name = os.environ.get("WALLPICK_STEAM_USER", "").strip()
+    if not name:
+        try:
+            name = steam_user_file().read_text(encoding="utf-8").strip()
+        except OSError:
+            name = ""
+    if not name:
+        raise NoticeError(f"Workshop downloads need Steam: {STEAM_LOGIN_HINT}")
+    if not valid_steam_user(name):
+        raise NoticeError(f"The saved Steam account name is invalid: {STEAM_LOGIN_HINT}")
+    return name
+
+
+def steamcmd_argv(*commands: str) -> tuple[list[str], dict, Path]:
+    command = shutil.which("steamcmd")
+    if not command:
+        raise NoticeError("Workshop downloads need steamcmd, which this system does not provide")
+    home = workshop.steamcmd_home()
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # A private HOME keeps steamcmd away from the Steam client's own files.
+    return [command, *commands], {**os.environ, "HOME": str(home)}, home
+
+
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def steamcmd_download(identifier: str) -> Path:
+    """Download one Workshop item with steamcmd's saved login."""
+    user = steam_user()
+    argv, env, home = steamcmd_argv("+login", user, "+workshop_download_item", workshop.APP_ID, identifier, "+quit")
+    try:
+        # stdin is closed, so steamcmd cannot wait for a password prompt.
+        result = subprocess.run(argv, cwd=home, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, timeout=STEAMCMD_TIMEOUT, check=False)
+    except subprocess.TimeoutExpired as error:
+        raise ActionError("Steam took too long to download this wallpaper") from error
+    except OSError as error:
+        raise ActionError(f"Could not start steamcmd: {error}") from error
+    output = ANSI.sub("", result.stdout.decode("utf-8", "replace"))
+    folder = workshop.steamcmd_root() / "steamapps" / "workshop" / "content" / workshop.APP_ID / identifier
+    if f"Success. Downloaded item {identifier}" in output and (folder / "project.json").is_file():
+        return folder
+    print(f"wallpick: steamcmd: {output.strip()[-600:]}", file=sys.stderr)
+    if "Cached credentials not found" in output or re.search(r"Logging in user .*(ERROR|FAILED)", output):
+        raise NoticeError(f"Steam sign-in has expired: {STEAM_LOGIN_HINT}")
+    if "Rate Limit" in output:
+        raise NoticeError("Steam is limiting sign-ins for now; try again later")
+    if re.search(rf"Download item {identifier} failed \((Failure|Access Denied|No subscription)\)", output):
+        raise NoticeError("Steam refused the download: the account must own Wallpaper Engine")
+    raise ActionError("Steam could not download this wallpaper")
+
+
+def video_duration(video: Path) -> float:
+    command = shutil.which("ffprobe")
+    if not command:
+        return 0.0
+    result = run_process([command, "-v", "error", "-show_entries", "format=duration",
+                          "-of", "default=noprint_wrappers=1:nokey=1", str(video)], 30)
+    try:
+        return max(0.0, float(result.stdout.decode().strip()))
+    except ValueError:
+        return 0.0
+
+
+def extract_frame(video: Path, stem: str) -> Path:
+    """Save one sharp frame of a video as the Workshop item's still image."""
+    ffmpeg = require_command("ffmpeg")
+    directory = backend.pictures_dir() / backend.FOLDERS["workshop"]
+    directory.mkdir(parents=True, exist_ok=True)
+    # A little way in skips the fade-in many loops start with.
+    duration = video_duration(video)
+    offsets = [round(min(duration * 0.15, 20.0), 2)] if duration > 1 else []
+    temporary = frame = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=".wallpick-", suffix=".png", dir=directory, delete=False) as output:
+            frame = Path(output.name)
+        for offset in offsets + [0]:
+            argv = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y"]
+            argv += ["-ss", str(offset)] if offset else []
+            argv += ["-i", str(video), "-map", "0:v:0", "-frames:v", "1", "-an", "-sn", "-dn",
+                     "-c:v", "png", "-f", "image2", str(frame)]
+            result = run_process(argv, 120)
+            if result.returncode == 0 and frame.stat().st_size:
+                break
+        else:
+            raise ActionError("Could not read a frame from this video wallpaper")
+        validate_image(frame)
+        # A high-quality JPEG is a fraction of a 4K PNG's size.
+        with tempfile.NamedTemporaryFile(prefix=".wallpick-", suffix=".part", dir=directory, delete=False) as output:
+            temporary = Path(output.name)
+        with Image.open(frame) as image:
+            image.convert("RGB").save(temporary, format="JPEG", quality=95, subsampling=0)
+        validate_image(temporary)
+        destination = directory / f"{stem}.jpg"
+        os.replace(temporary, destination)
+        temporary = None
+        return destination
+    except OSError as error:
+        raise ActionError(f"Could not save the video frame: {error}") from error
+    finally:
+        for path in (frame, temporary):
+            if path:
+                path.unlink(missing_ok=True)
+
+
+def scene_picture(folder: Path, stem: str) -> Path:
+    """Save a scene wallpaper's background picture as its still image."""
+    try:
+        picture = scenepkg.main_picture(folder)
+    except (scenepkg.SceneError, OSError, ValueError) as error:
+        print(f"wallpick: scene {folder.name}: {error}", file=sys.stderr)
+        raise NoticeError("This scene has no full-size picture to use; try another one") from error
+    minimum = min_dimensions()
+    if picture.width < minimum[0] or picture.height < minimum[1]:
+        raise NoticeError(f"This scene's picture is only {picture.width}×{picture.height}; try another one")
+    directory = backend.pictures_dir() / backend.FOLDERS["workshop"]
+    directory.mkdir(parents=True, exist_ok=True)
+    # Pictures with transparency keep it as PNG; the rest become JPEG.
+    has_alpha = picture.mode in ("RGBA", "LA", "PA") and picture.getchannel("A").getextrema()[0] < 255
+    extension = "png" if has_alpha else "jpg"
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=".wallpick-", suffix=".part", dir=directory, delete=False) as output:
+            temporary = Path(output.name)
+        if has_alpha:
+            picture.save(temporary, format="PNG")
+        else:
+            picture.convert("RGB").save(temporary, format="JPEG", quality=95, subsampling=0)
+        validate_image(temporary)
+        destination = directory / f"{stem}.{extension}"
+        os.replace(temporary, destination)
+        temporary = None
+        return destination
+    finally:
+        if temporary:
+            temporary.unlink(missing_ok=True)
+
+
+def workshop_still(identifier: str) -> Path:
+    """The still image for a Workshop video, downloading it if needed."""
+    if not workshop.valid_id(identifier):
+        raise ActionError("Invalid Steam Workshop item ID")
+    stem = f"workshop_{identifier}"
+    directory = backend.pictures_dir() / backend.FOLDERS["workshop"]
+    for extension in ("jpg", "png"):
+        existing = directory / f"{stem}.{extension}"
+        if existing.is_file():
+            try:
+                validate_image(existing)
+                return existing
+            except ActionError:
+                existing.unlink(missing_ok=True)
+    folder = workshop.find_item(identifier)
+    downloaded = folder is None
+    if downloaded:
+        folder = steamcmd_download(identifier)
+    try:
+        info = workshop.read_project(folder)
+        if not info:
+            raise NoticeError("This Workshop item is not a video or scene wallpaper")
+        if info["kind"] == "scene":
+            return scene_picture(folder, stem)
+        return extract_frame(info["video"], stem)
+    finally:
+        # Only the still is kept; videos run to hundreds of megabytes. Items
+        # the Steam client downloaded belong to Steam and are left alone.
+        if downloaded and folder.resolve().is_relative_to(workshop.steamcmd_root().resolve()):
+            shutil.rmtree(folder, ignore_errors=True)
+
+
+def random_workshop(words: list[str]) -> dict:
+    results, pages = workshop_page(words, 1)
+    page = secrets.randbelow(max(1, min(pages, WORKSHOP_RANDOM_PAGES))) + 1
+    if page > 1:
+        results, _ = workshop_page(words, page)
+    if not results:
+        raise ActionError("No Steam Workshop wallpaper matched the query")
+    choice = results[secrets.randbelow(len(results))]
+    return {**apply(workshop_still(choice["id"])), "source": "workshop"}
+
+
+def steam_login(arguments: list[str]) -> int:
+    """Sign steamcmd in once, interactively; later downloads reuse its saved login."""
+    if len(arguments) > 1:
+        raise ActionError("steam-login takes one optional Steam account name")
+    name = arguments[0] if arguments else input("Steam account name: ").strip()
+    if not valid_steam_user(name):
+        raise ActionError("Steam account names use only letters, digits and underscores")
+    argv, env, home = steamcmd_argv("+login", name, "+quit")
+    print("steamcmd will ask for your password and Steam Guard code. Wallpick never sees them;\n"
+          f"steamcmd keeps its own sign-in token in {home}.\n"
+          "The first run also updates steamcmd, which takes a minute or two.\n", flush=True)
+    try:
+        subprocess.run(argv, cwd=home, env=env, check=False)
+        # Confirm that the saved login works without a password.
+        check = subprocess.run(argv, cwd=home, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, timeout=180, check=False)
+    except subprocess.TimeoutExpired as error:
+        raise ActionError("steamcmd did not finish signing in") from error
+    except OSError as error:
+        raise ActionError(f"Could not start steamcmd: {error}") from error
+    output = ANSI.sub("", check.stdout.decode("utf-8", "replace"))
+    if "Cached credentials not found" in output or not re.search(r"Logging in user .*\.\.\.OK", output):
+        raise ActionError("Steam sign-in did not complete; run wallpick steam-login again")
+    path = steam_user_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(name + "\n", encoding="utf-8")
+    print(f"Signed in as {name}. Wallpick can now download Workshop wallpapers.")
+    return 0
+
+
 def search(source: str, words: list[str], page: int = 1) -> dict:
     """List matching wallpapers without downloading or applying any of them."""
     source = search_source(source)
     if not 1 <= page <= 1000:
         raise ActionError("Search page is out of range")
+    if source == "workshop":
+        results, pages = workshop_page(words, page)
+        return {"source": source, "page": page, "more": page < pages, "results": results}
     minimum = min_dimensions()
     if source == "general":
         # Relevance needs a query; an empty search shows the most popular.
@@ -812,6 +1150,9 @@ def result_board(source: str, url: str) -> tuple[str, str]:
 
 def download_result(source: str, identifier: str, url: str) -> Path:
     source = search_source(source)
+    if source == "workshop":
+        # steamcmd finds the item by ID; the URL only names its page.
+        return workshop_still(identifier)
     identifier = result_id(identifier)
     prefix, files = result_board(source, url)
     url = https_url(url, files)
@@ -841,7 +1182,8 @@ def favorite_result(source: str, identifier: str, url: str) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Wallpick standalone wallpaper actions")
     parser.add_argument("command", choices=["apply", "favorite-current", "randomanime", "randomwall", "randomgooner",
-                                            "search", "preview", "apply-result", "favorite-result"])
+                                            "randomworkshop", "search", "preview", "apply-result", "favorite-result",
+                                            "steam-login"])
     parser.add_argument("arguments", nargs="*")
     args = parser.parse_args(argv)
     try:
@@ -858,6 +1200,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(fetch_preview(*args.arguments)))
             return 0
         with action_lock():
+            if args.command == "steam-login":
+                return steam_login(args.arguments)
             if args.command == "apply":
                 if len(args.arguments) != 1:
                     raise ActionError("Apply requires one image path")
@@ -875,6 +1219,9 @@ def main(argv: list[str] | None = None) -> int:
                 result = random_wallpaper(args.command, args.arguments)
         print(json.dumps(result, ensure_ascii=False))
         return 0
+    except NoticeError as error:
+        print(f"wallpick: {error}", file=sys.stderr)
+        return 3
     except (ActionError, OSError, ValueError) as error:
         print(f"wallpick: {error}", file=sys.stderr)
         return 1

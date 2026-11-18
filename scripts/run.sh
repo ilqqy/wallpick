@@ -35,11 +35,13 @@ case "${1:-open}" in
             anime) command=randomanime ;;
             general) command=randomwall ;;
             gooner) command=randomgooner ;;
-            *) echo "Usage: wallpick fetch {anime|general|gooner} [tags...]" >&2; exit 2 ;;
+            workshop) command=randomworkshop ;;
+            *) echo "Usage: wallpick fetch {anime|general|gooner|workshop} [tags...]" >&2; exit 2 ;;
         esac
         shift
         exec "$python_bin" "$project_dir/scripts/actions.py" "$command" -- "$@"
         ;;
+    steam-login) shift; exec "$python_bin" "$project_dir/scripts/actions.py" steam-login -- "$@" ;;
     stop)
         instance="$(find_instance)"
         [[ -z "$instance" ]] && exit 0
@@ -51,12 +53,13 @@ case "${1:-open}" in
         enable_compositor_blur
         exec "$qs_bin" -p "$project_dir/src" --no-duplicate
         ;;
-    open|close|toggle|status|refresh|random-anime|random-wall|random-gooner)
+    open|close|toggle|status|refresh|random-anime|random-wall|random-gooner|random-workshop)
         action="${1:-open}"
         case "$action" in
             random-anime) ipc_function=randomAnime ;;
             random-wall) ipc_function=randomWall ;;
             random-gooner) ipc_function=randomGooner ;;
+            random-workshop) ipc_function=randomWorkshop ;;
             *) ipc_function="$action" ;;
         esac
         instance="$(find_instance)"
@@ -83,6 +86,6 @@ case "${1:-open}" in
         fi
         exec "$qs_bin" ipc -i "$instance" call wallpick "$ipc_function"
         ;;
-    --help|-h) echo "Usage: wallpick [open|close|toggle|status|stop|refresh|foreground|random-anime|random-wall|random-gooner|apply PATH|favorite|fetch SOURCE TAGS...]" ;;
+    --help|-h) echo "Usage: wallpick [open|close|toggle|status|stop|refresh|foreground|random-anime|random-wall|random-gooner|random-workshop|apply PATH|favorite|fetch SOURCE TAGS...|steam-login [ACCOUNT]]" ;;
     *) echo "Unknown command. Run wallpick --help." >&2; exit 2 ;;
 esac

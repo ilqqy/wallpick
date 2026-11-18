@@ -45,6 +45,8 @@ PanelWindow {
     readonly property string busyOperation: service && service.busy ? String(service.operation || "") : ""
     readonly property string busyLabel: busyOperation === "" ? ""
         : busyOperation === "Apply" ? "Applying wallpaper…"
+        : service.operationSource === "workshop" && busyOperation.endsWith("Result")
+            ? "Getting the video from Steam Workshop…"
         : busyOperation === "ApplyResult" ? "Downloading and applying…"
         : busyOperation === "Favorite" ? "Saving to favorites…"
         : busyOperation === "FavoriteResult" ? "Downloading to favorites…"
@@ -634,7 +636,8 @@ PanelWindow {
                         anchors.fill: query
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
-                        text: "Search " + window.fetchSourceName + (window.fetchMode === "randomwall" ? "" : " tags")
+                        // Wallhaven and the Workshop search titles and descriptions, not tags.
+                        text: "Search " + window.fetchSourceName + (["randomwall", "randomworkshop"].includes(window.fetchMode) ? "" : " tags")
                         color: Theme.dim
                         font.pixelSize: 13
                         visible: !query.text && !query.preeditText

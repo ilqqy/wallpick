@@ -1,4 +1,4 @@
-**A cinematic wallpaper picker for NixOS and Hyprland.** Browse saved images, preview them in a drifting gallery, apply one when you are ready, or fetch something new from Konachan and Wallhaven. The Quickshell interface and wallpaper backend ship together in one flake.
+**A cinematic wallpaper picker for NixOS and Hyprland.** Browse saved images, preview them in a drifting gallery, apply one when you are ready, or fetch something new from Konachan, Wallhaven and the Steam Workshop. The Quickshell interface and wallpaper backend ship together in one flake.
 
 ## Quick start
 
@@ -41,6 +41,29 @@ To find something specific, choose **Anime**, **Non-anime**, or **Gooner**, type
 
 **Random** sits beside the search field and stays separate from search. It downloads a random wallpaper matching the tags and applies it immediately. Each source card also has a circular shuffle control: in **Recent** and **Favorites** it picks a saved image to preview, and in the remote sources it works like Random. Gooner is a separate questionable-rating mode and stays out of Recent.
 
+### Steam Workshop
+
+**Workshop** lists Wallpaper Engine wallpapers from the Steam Workshop and sets them as ordinary still images:
+
+- **Scene** wallpapers (most of the Workshop): Wallpick unpacks the scene and uses its background picture at full size. On the Workshop, a plain picture uploaded to Wallpaper Engine is also a scene. For animated scenes you get the artwork without its effects. If a scene has no landscape picture at least the minimum size, Wallpick says so and leaves your wallpaper alone.
+- **Video** wallpapers: Wallpick saves one full-resolution frame from the video.
+- **Web** and **application** wallpapers have no picture, so they are left out.
+
+The still is saved as `workshop_<id>.jpg` (or `.png` if it has transparency). Searches list wallpapers rated *Everyone*, matching your words against titles and descriptions. With no words, you get the most popular of all time. Results tagged smaller than the minimum size, or in portrait, are skipped. The gallery previews are Steam's small thumbnails; the wallpaper you apply is full size.
+
+Wallpapers reach Wallpick in two ways:
+
+- **Subscriptions.** Scene and video wallpapers you subscribed to in the Steam client show up in the Workshop card without any setup. This includes extra Steam library folders and Flatpak Steam. Steam only downloads subscriptions when Wallpaper Engine is installed. Wallpick reads these files and never changes them.
+- **Search and Random.** Anything else is downloaded with the bundled `steamcmd` when you press **Apply wallpaper**, **Favorite** or **Random**. Steam only allows this for an account that owns Wallpaper Engine. Sign in once in a terminal:
+
+  ```sh
+  wallpick steam-login your_account_name
+  ```
+
+  `steamcmd` asks for your password and Steam Guard code itself; Wallpick never sees them. Later downloads reuse the sign-in token `steamcmd` saves. `steamcmd` runs with a private home in `~/.local/share/wallpick/steamcmd`, so it never touches your Steam client's files. After the still is saved, the download is deleted. The first download also updates `steamcmd`, which takes a minute or two.
+
+If the sign-in is missing or has expired, or the account does not own Wallpaper Engine, the status line says so. `steamcmd` is unfree but redistributable. The flake allows only that package, and it exists only on x86_64-linux. On aarch64, Workshop search and local subscriptions still work, but downloads do not.
+
 The popup uses a dark translucent surface with compositor blur. On Hyprland, the launcher adds a Wallpick-only blur rule for the current session; it does not edit your Hyprland or NixOS configuration. Other layer-shell compositors show the readable translucent surface without that Hyprland-specific blur rule.
 
 The package starts `awww-daemon` on demand if one is not already running. It stores downloaded images and a copy of the current wallpaper in these folders:
@@ -51,6 +74,7 @@ The package starts `awww-daemon` on demand if one is not already running. It sto
 | Anime | `~/Pictures/random_konachan` |
 | Non-anime | `~/Pictures/random_wallhaven` |
 | Gooner | `~/Pictures/random_gooner` |
+| Workshop (video frames) | `~/Pictures/random_workshop` |
 | Current wallpaper | `~/Pictures/.current-wallpaper` |
 
 Existing images in those folders appear automatically. Failed downloads leave the current wallpaper marker intact.
@@ -96,11 +120,14 @@ wallpick stop
 wallpick random-anime
 wallpick random-wall
 wallpick random-gooner
+wallpick random-workshop
 
 wallpick apply /absolute/path/to/image.png
 wallpick favorite
 wallpick fetch anime rezero -chibi
 wallpick fetch general dark forest
+wallpick fetch workshop rain
+wallpick steam-login your_account_name
 ```
 
 The `random-*` commands send requests to the running UI; `apply`, `favorite`, and `fetch` run the bundled backend directly. Remote Random actions apply immediately.
@@ -121,6 +148,9 @@ Set these variables before starting Wallpick. Run `wallpick stop` first if it is
 | `WALLPICK_PYWAL` | `auto` | Regenerate the pywal palette after applying. `auto` does so only if `~/.cache/wal/colors.json` already exists; `1` always, `0` never |
 | `WALLPICK_WAL_COLORS` | `~/.cache/wal/colors.json` | pywal palette the interface takes its colours from; it updates live when wal rewrites it |
 | `WALLPICK_REDUCED_MOTION` | `0` | Set to `1` to stop ambient and spring animations |
+| `WALLPICK_STEAM_DIR` | native, `~/.steam/steam` and Flatpak Steam | Steam client folder to read Workshop subscriptions from |
+| `WALLPICK_STEAMCMD_HOME` | `~/.local/share/wallpick/steamcmd` | Private home for `steamcmd`. It must be inside your home directory, because `steam-run` hides `/tmp` |
+| `WALLPICK_STEAM_USER` | saved by `steam-login` | Steam account name for Workshop downloads |
 
 For example: `WALLPICK_PICTURES_DIR="$HOME/Pictures/Wallpick" nix run github:ilqqy/wallpick`.
 
@@ -142,4 +172,4 @@ nix build .
 
 The tests use temporary picture folders and mocked wallpaper commands. `tests/check.py` needs a Wayland session for its popup checks; `nix flake check` runs the backend suite without a desktop or network connection.
 
-Wallpick supports PNG and JPEG. Remote sources need internet access, and the shader rim needs Qt 6 GPU rendering. Hyprland provides the tested monitor placement and outside-click behavior; other layer-shell compositors may work with reduced integration. X11 and GNOME/KDE are not supported targets.
+Wallpick supports PNG and JPEG; Workshop scenes and videos become JPEG (or PNG) stills. Remote sources need internet access, and the shader rim needs Qt 6 GPU rendering. Hyprland provides the tested monitor placement and outside-click behavior; other layer-shell compositors may work with reduced integration. X11 and GNOME/KDE are not supported targets.
