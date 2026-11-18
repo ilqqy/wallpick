@@ -889,9 +889,15 @@ def steamcmd_download(identifier: str) -> Path:
     except OSError as error:
         raise ActionError(f"Could not start steamcmd: {error}") from error
     output = ANSI.sub("", result.stdout.decode("utf-8", "replace"))
-    folder = workshop.steamcmd_root() / "steamapps" / "workshop" / "content" / workshop.APP_ID / identifier
-    if f"Success. Downloaded item {identifier}" in output and (folder / "project.json").is_file():
-        return folder
+    reported = re.search(rf'Success\. Downloaded item {identifier} to "([^"]+)"', output)
+    if reported:
+        # steamcmd names the folder it used; it must be inside its private root.
+        folder = Path(reported.group(1)).resolve()
+        if folder.is_relative_to(workshop.steamcmd_root().resolve()) and (folder / "project.json").is_file():
+            return folder
+        found = workshop.find_item(identifier)
+        if found and found.resolve().is_relative_to(workshop.steamcmd_root().resolve()):
+            return found
     print(f"wallpick: steamcmd: {output.strip()[-600:]}", file=sys.stderr)
     if "Cached credentials not found" in output or re.search(r"Logging in user .*(ERROR|FAILED)", output):
         raise NoticeError(f"Steam sign-in has expired: {STEAM_LOGIN_HINT}")
@@ -1002,10 +1008,7 @@ def workshop_still(identifier: str) -> Path:
                 return existing
             except ActionError:
                 existing.unlink(missing_ok=True)
-    folder = workshop.find_item(identifier)
-    downloaded = folder is None
-    if downloaded:
-        folder = steamcmd_download(identifier)
+    folder = workshop.find_item(identifier) or steamcmd_download(identifier)
     try:
         info = workshop.read_project(folder)
         if not info:
@@ -1016,7 +1019,7 @@ def workshop_still(identifier: str) -> Path:
     finally:
         # Only the still is kept; videos run to hundreds of megabytes. Items
         # the Steam client downloaded belong to Steam and are left alone.
-        if downloaded and folder.resolve().is_relative_to(workshop.steamcmd_root().resolve()):
+        if folder.resolve().is_relative_to(workshop.steamcmd_root().resolve()):
             shutil.rmtree(folder, ignore_errors=True)
 
 

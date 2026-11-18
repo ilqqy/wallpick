@@ -746,8 +746,11 @@ class ActionsTest(unittest.TestCase):
 
         def fake_run(argv, **options):
             calls.append((argv, options))
+            # The nixpkgs wrapper creates "Steamapps"; steamcmd reports where it saved.
             self.steam_item(steam_root, 41)
-            return self.completed(argv, stdout=b'\x1b[0mSuccess. Downloaded item 41 to "/x"')
+            (steam_root / "steamapps").rename(steam_root / "Steamapps")
+            moved = steam_root / "Steamapps" / "workshop" / "content" / "431960" / "41"
+            return self.completed(argv, stdout=b'\x1b[0mSuccess. Downloaded item 41 to "%s" (5 bytes)' % bytes(moved))
 
         with patch.dict(os.environ, {"WALLPICK_STEAM_USER": "someone_1"}), \
              patch.object(actions, "require_command", side_effect=lambda name: name), \
@@ -761,7 +764,18 @@ class ActionsTest(unittest.TestCase):
         self.assertEqual((options["env"]["HOME"], options["cwd"]), (str(home), home))
         self.assertEqual(options["stdin"], subprocess.DEVNULL)
         self.assertTrue(still.is_file())
-        self.assertFalse((steam_root / "steamapps" / "workshop" / "content" / "431960" / "41").exists())
+        self.assertFalse((steam_root / "Steamapps" / "workshop" / "content" / "431960" / "41").exists())
+
+    def test_steamcmd_report_outside_its_root_is_not_trusted(self):
+        elsewhere = self.steam_item(self.root / "elsewhere", 42)
+        output = b'Success. Downloaded item 42 to "%s"' % bytes(elsewhere)
+        with patch.dict(os.environ, {"WALLPICK_STEAM_USER": "a"}), \
+             patch.object(actions.shutil, "which", side_effect=lambda name: name), \
+             patch.object(actions.subprocess, "run", return_value=self.completed([], 0, stdout=output)), \
+             redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(actions.ActionError, "could not download"):
+                actions.steamcmd_download("42")
+        self.assertTrue(elsewhere.is_dir())
 
     def test_steamcmd_failures_say_what_to_do(self):
         cases = [(b"Cached credentials not found.\npassword: \nLogging in user 'a' to Steam Public...ERROR (Invalid Password)",

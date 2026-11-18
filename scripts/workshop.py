@@ -78,7 +78,9 @@ def content_dirs() -> list[Path]:
     """Every folder Steam or Wallpick's steamcmd downloads Wallpaper Engine items to."""
     libraries = [library for root in steam_roots() for library in library_folders(root)]
     libraries.append(steamcmd_root())
-    return unique_dirs(library / "steamapps" / "workshop" / "content" / APP_ID for library in libraries)
+    # nixpkgs' steamcmd wrapper creates "Steamapps", which steamcmd then uses.
+    return unique_dirs(library / folder / "workshop" / "content" / APP_ID
+                       for library in libraries for folder in ("steamapps", "Steamapps"))
 
 
 def valid_id(value: object) -> bool:
